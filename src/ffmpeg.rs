@@ -314,3 +314,55 @@ pub fn scale_vid_prop(
         )
     }
 }
+
+
+pub fn change_vid_volume(
+    tempdir: PathBuf,
+    input_vid: &Path,
+    volume_factor: f32,
+    pipeline_step: usize,
+) -> Result<PathBuf, String> {
+    let output_path = tempdir.join(format!("volume_{}.mkv", pipeline_step));
+
+    let volume_filter = format!("volume={}", volume_factor);
+
+    let output = match Command::new("ffmpeg")
+        .args([
+            "-i",
+            input_vid.to_str().unwrap(),
+            "-vf",
+            "copy", // no video filtering
+            "-af",
+            &volume_filter,
+            // video encode (required when reprocessing streams)
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            // re-encode audio since we modified it
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(format!(
+                "Could not start ffmpeg during volume change: {:?}",
+                e
+            ));
+        }
+    };
+
+    if output.status.success() {
+        Ok(output_path)
+    } else {
+        Err(
+            "ffmpeg ran during volume change, but could not process. Invalid input."
+                .to_string(),
+        )
+    }
+}

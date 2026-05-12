@@ -1,9 +1,10 @@
 mod ffmpeg;
 mod pipeline;
+mod screens;
 mod style;
 
-use iced::Alignment::Center;
-use iced::ContentFit;
+use screens::ScreenName;
+
 use iced::Length::{Fill, Shrink};
 use iced::widget::slider;
 use iced::{
@@ -14,13 +15,18 @@ use iced::{
         column, container, pick_list, row, stack, text, text_input,
     },
 };
+use iced::{Alignment::Center, ContentFit};
 use iced_video_player::{Video, VideoPlayer};
 use rfd::FileDialog;
+use screens::DefaultScreen;
 use std::time::Duration;
 use std::{fmt::Display, path::PathBuf};
 use url::Url;
 
 use crate::pipeline::Pipeline;
+use crate::screens::Screen;
+use crate::screens::crop::CropMode;
+use crate::screens::crop::CropModeKind;
 
 enum BottomBarState {
     Normal,
@@ -110,131 +116,6 @@ impl<Message> canvas::Program<Message> for RectOverlay {
         );
 
         vec![frame.into_geometry()]
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct TrimInfo {
-    start_frame_text: String,
-    start_frame_time: f64,
-    end_frame_text: String,
-    end_frame_time: f64,
-}
-
-#[derive(Default, Debug)]
-pub struct CropInfo {
-    crop_mode: CropMode,
-    width: u32,
-    height: u32,
-    text_width: String,
-    text_height: String,
-}
-
-impl CropInfo {
-    pub fn get_top_left_pixel(&self, video: &Video) -> (u32, u32) {
-        match self.crop_mode {
-            CropMode::TopLeft { x, y, .. } => (x, y),
-            CropMode::PixelCenter { x, y, .. } => (
-                x.saturating_sub(self.width / 2),
-                y.saturating_sub(self.height / 2),
-            ),
-            CropMode::VideoCenter => {
-                let vid_size = video.size();
-                let center_loc = (vid_size.0 as u32 / 2, vid_size.1 as u32 / 2);
-                (
-                    center_loc.0.saturating_sub(self.width / 2),
-                    center_loc.1.saturating_sub(self.height / 2),
-                )
-            }
-        }
-    }
-    /// From whatever crop_type we have, changes to CropType::TopLeft
-    /// Also returns top left pixel
-    pub fn convert_top_left(&mut self, video: &Video) -> (u32, u32) {
-        let top_left = self.get_top_left_pixel(video);
-        self.crop_mode = CropMode::TopLeft {
-            x: top_left.0,
-            y: top_left.1,
-            text_x: top_left.0.to_string(),
-            text_y: top_left.1.to_string(),
-        };
-        top_left
-    }
-
-    pub fn convert_to(&mut self, video: &Video, target: CropModeKind) {
-        // first, go to top left
-        let top_left_pixel = self.convert_top_left(video);
-        // then, convert from top left to target
-        match target {
-            CropModeKind::TopLeft => { /* done */ }
-            CropModeKind::VideoCenter => self.crop_mode = CropMode::VideoCenter,
-            CropModeKind::PixelCenter => {
-                let new_x = top_left_pixel.0.saturating_add(self.width / 2);
-                let new_y = top_left_pixel.1.saturating_add(self.height / 2);
-                self.crop_mode = CropMode::PixelCenter {
-                    x: new_x,
-                    y: new_y,
-                    text_x: new_x.to_string(),
-                    text_y: new_y.to_string(),
-                };
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum CropMode {
-    TopLeft {
-        x: u32,
-        y: u32,
-        text_x: String,
-        text_y: String,
-    },
-    PixelCenter {
-        x: u32,
-        y: u32,
-        text_x: String,
-        text_y: String,
-    },
-    VideoCenter,
-}
-
-impl Default for CropMode {
-    fn default() -> Self {
-        Self::TopLeft {
-            x: 0,
-            y: 0,
-            text_x: "0".to_string(),
-            text_y: "0".to_string(),
-        }
-    }
-}
-
-impl CropMode {
-    pub fn to_kind(&self) -> CropModeKind {
-        match self {
-            CropMode::TopLeft { .. } => CropModeKind::TopLeft,
-            CropMode::PixelCenter { .. } => CropModeKind::PixelCenter,
-            CropMode::VideoCenter => CropModeKind::VideoCenter,
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub enum CropModeKind {
-    #[default]
-    TopLeft,
-    VideoCenter,
-    PixelCenter,
-}
-
-impl Display for CropModeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CropModeKind::TopLeft => write!(f, "Top left pixel"),
-            CropModeKind::VideoCenter => write!(f, "Center of video"),
-            CropModeKind::PixelCenter => write!(f, "Center at pixel"),
-        }
     }
 }
 
@@ -333,277 +214,9 @@ pub enum Message {
     ScaleFinished(Result<PathBuf, String>),
     CropTypeSelected(CropModeKind),
     RevertToPipeline(usize),
-}
-
-#[derive(Debug, Clone)]
-pub enum ScreenName {
-    Trim,
-    Crop,
-    Scale,
-    Pipeline,
-}
-
-#[derive(Debug)]
-pub struct ScaleInfo {
-    width: u32,
-    text_width: String,
-    height: u32,
-    text_height: String,
-    prop: f32,
-    text_prop: String,
-    keep_aspect_ratio: bool,
-}
-
-impl ScreenName {
-    pub fn to_screen(self, video: &VideoInfo) -> Screen {
-        match self {
-            ScreenName::Trim => Screen::Trim(TrimInfo::from_video(video)),
-            ScreenName::Crop => Screen::Crop(CropInfo::from_video(video)),
-            ScreenName::Scale => Screen::Scale(ScaleInfo::from_video(video)),
-            ScreenName::Pipeline => Screen::Pipeline,
-        }
-    }
-}
-
-trait DefaultScreen: Sized {
-    fn from_video(video: &VideoInfo) -> Self;
-    fn fit_to_bounds(&mut self, video: &VideoInfo, update_text: bool);
-}
-
-impl DefaultScreen for ScaleInfo {
-    fn from_video(video: &VideoInfo) -> Self {
-        let player = &video.player;
-        let vid_size = player.size();
-
-        Self {
-            width: vid_size.0 as u32,
-            text_width: vid_size.0.to_string(),
-            height: vid_size.1 as u32,
-            text_height: vid_size.1.to_string(),
-            prop: 1.0f32,
-            text_prop: "1.0".to_string(),
-            keep_aspect_ratio: true,
-        }
-    }
-
-    fn fit_to_bounds(&mut self, video: &VideoInfo, update_text: bool) {
-        if self.keep_aspect_ratio {
-            if self.prop <= 0.0f32 {
-                self.prop = 1.0f32;
-                if update_text {
-                    self.text_prop = "1.0".to_string();
-                }
-            }
-            let vid_size = video.player.size();
-            self.width = (vid_size.0 as f32 * self.prop).round() as u32;
-            self.height = (vid_size.1 as f32 * self.prop).round() as u32;
-            if update_text {
-                self.text_width = self.width.to_string();
-                self.text_height = self.height.to_string();
-            }
-        } else {
-            if self.width <= 1 {
-                self.width = 1;
-                if update_text {
-                    self.text_width = 1.to_string();
-                }
-            }
-            if self.height <= 1 {
-                self.height = 1;
-                if update_text {
-                    self.text_height = 1.to_string();
-                }
-            }
-        }
-    }
-}
-
-impl DefaultScreen for TrimInfo {
-    fn from_video(video: &VideoInfo) -> Self {
-        let player = &video.player;
-        let vid_duration = player.duration();
-        let last_frame_time = vid_duration.as_secs_f64();
-
-        Self {
-            start_frame_text: "0".to_string(),
-            start_frame_time: 0f64,
-            end_frame_text: last_frame_time.to_string(),
-            end_frame_time: last_frame_time,
-        }
-    }
-
-    fn fit_to_bounds(&mut self, video: &VideoInfo, update_text: bool) {
-        if self.start_frame_time <= 0.0f64 {
-            self.start_frame_time = 0.0f64;
-            if update_text {
-                self.start_frame_text = self.start_frame_time.to_string();
-            }
-        }
-        let max_dur = video.player.duration().as_secs_f64();
-        if self.end_frame_time > max_dur {
-            self.end_frame_time = max_dur;
-            if update_text {
-                self.end_frame_text = self.end_frame_time.to_string();
-            }
-        }
-    }
-}
-
-impl DefaultScreen for CropInfo {
-    fn from_video(video: &VideoInfo) -> Self {
-        let player = &video.player;
-        let vid_size = player.size();
-
-        Self {
-            crop_mode: CropMode::default(),
-
-            width: vid_size.0 as u32,
-            height: vid_size.1 as u32,
-            text_width: vid_size.0.to_string(),
-            text_height: vid_size.1.to_string(),
-        }
-    }
-
-    fn fit_to_bounds(&mut self, video: &VideoInfo, update_text: bool) {
-        let vid_size = video.player.size();
-        let vid_width = vid_size.0 as u32;
-        let vid_height = vid_size.1 as u32;
-        match &mut self.crop_mode {
-            CropMode::VideoCenter => {
-                if self.width > vid_width {
-                    self.width = vid_width;
-                    if update_text {
-                        self.text_width = self.width.to_string();
-                    }
-                }
-                if self.height > vid_height {
-                    self.height = vid_height;
-                    if update_text {
-                        self.text_height = self.height.to_string();
-                    }
-                }
-            }
-            CropMode::TopLeft {
-                x,
-                y,
-                text_x,
-                text_y,
-            } => {
-                if *x >= vid_width {
-                    *x = vid_width - 1;
-                    if update_text {
-                        *text_x = x.to_string();
-                    }
-                }
-
-                if *y >= vid_height {
-                    *y = vid_height - 1;
-                    if update_text {
-                        *text_y = y.to_string();
-                    }
-                }
-
-                let max_width_value = vid_width - *x;
-                let max_height_value = vid_height - *y;
-
-                if self.width == 0 {
-                    self.width = 1;
-                    if update_text {
-                        self.text_width = self.width.to_string();
-                    }
-                }
-                if self.width > max_width_value {
-                    self.width = max_width_value;
-                    if update_text {
-                        self.text_width = self.width.to_string();
-                    }
-                }
-
-                if self.height == 0 {
-                    self.height = 1;
-                    if update_text {
-                        self.text_height = self.height.to_string();
-                    }
-                }
-                if self.height > max_height_value {
-                    self.height = max_height_value;
-                    if update_text {
-                        self.text_height = self.height.to_string();
-                    }
-                }
-            }
-            CropMode::PixelCenter {
-                x,
-                y,
-                text_x,
-                text_y,
-            } => {
-                if *x >= vid_width {
-                    *x = vid_width - 1;
-                    if update_text {
-                        *text_x = x.to_string();
-                    }
-                } else if *x == 0 {
-                    *x = 1;
-                    if update_text {
-                        *text_x = x.to_string();
-                    }
-                }
-
-                // TODO there is a problem here. Imagine a 1x1 video.
-                // It will be cropped to nothing. Need to disallow this.
-
-                if *y >= vid_height {
-                    *y = vid_height - 1;
-                    if update_text {
-                        *text_y = y.to_string();
-                    }
-                } else if *y == 0 {
-                    *y = 1;
-                    if update_text {
-                        *text_y = y.to_string();
-                    }
-                }
-
-                let max_width_value = u32::min(*x, vid_width.saturating_sub(*x));
-                let max_height_value = u32::min(*y, vid_height.saturating_sub(*y));
-
-                if self.width == 0 {
-                    self.width = 1;
-                    if update_text {
-                        self.text_width = self.width.to_string();
-                    }
-                }
-                if self.width > max_width_value {
-                    self.width = max_width_value;
-                    if update_text {
-                        self.text_width = self.width.to_string();
-                    }
-                }
-
-                if self.height == 0 {
-                    self.height = 1;
-                    if update_text {
-                        self.text_height = self.height.to_string();
-                    }
-                }
-                if self.height > max_height_value {
-                    self.height = max_height_value;
-                    if update_text {
-                        self.text_height = self.height.to_string();
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Screen {
-    Trim(TrimInfo),
-    Crop(CropInfo),
-    Scale(ScaleInfo),
-    Pipeline,
+    VolumePropChanged(String),
+    TryVolume,
+    VolumeFinished(Result<PathBuf, String>),
 }
 
 fn pick_file() -> Option<PathBuf> {
@@ -720,6 +333,8 @@ impl Counter {
                 .into(),
         ];
 
+        // TODO extract this out of here,
+        // move to screens/crop.rs
         if let Some(Screen::Crop(crop_info)) = self.screen.as_ref() {
             let top_left_pixel = crop_info.get_top_left_pixel(&video.player);
             let x_left_prop = (top_left_pixel.0 as f32 / video_size.0 as f32).clamp(0.0f32, 1.0f32);
@@ -759,202 +374,6 @@ impl Counter {
             player_bar.width(Fill).height(Shrink),
         ])
         .style(style::container_dark)
-    }
-
-    fn view_screen<'a>(&'a self) -> Container<'a, Message> {
-        let elt: Element<'a, Message> = match self.screen.as_ref() {
-            Some(Screen::Crop(crop_info)) => {
-                let position_row: Element<Message> = match &crop_info.crop_mode {
-                    CropMode::TopLeft { text_x, text_y, .. } => row![
-                        text("Crop top left pixel: ").size(16),
-                        text_input("0", text_x)
-                            .width(100)
-                            .on_input(Message::CropLeftChanged)
-                            .size(16)
-                            .style(style::text_input),
-                        Space::new().width(20),
-                        text_input("0", text_y)
-                            .width(100)
-                            .on_input(Message::CropTopChanged)
-                            .size(16)
-                            .style(style::text_input),
-                    ]
-                    .align_y(Alignment::Center)
-                    .into(),
-
-                    CropMode::PixelCenter { text_x, text_y, .. } => row![
-                        text("Crop center pixel: ").size(16),
-                        text_input("0", text_x)
-                            .width(100)
-                            .on_input(Message::CropLeftChanged)
-                            .size(16)
-                            .style(style::text_input),
-                        Space::new().width(20),
-                        text_input("0", text_y)
-                            .width(100)
-                            .on_input(Message::CropTopChanged)
-                            .size(16)
-                            .style(style::text_input),
-                    ]
-                    .align_y(Alignment::Center)
-                    .into(),
-
-                    CropMode::VideoCenter => Space::new().into(),
-                };
-
-                container(
-                    column![
-                        container(column![
-                            pick_list(
-                                [
-                                    CropModeKind::TopLeft,
-                                    CropModeKind::PixelCenter,
-                                    CropModeKind::VideoCenter
-                                ],
-                                Some(crop_info.crop_mode.to_kind()),
-                                Message::CropTypeSelected
-                            ),
-                            position_row,
-                            row![
-                                text("Crop width and height: ").size(16),
-                                text_input("1", &crop_info.text_width)
-                                    .width(100)
-                                    .on_input(Message::CropWidthChanged)
-                                    .size(16)
-                                    .style(style::text_input),
-                                Space::new().width(20),
-                                text_input("1", &crop_info.text_height)
-                                    .width(100)
-                                    .on_input(Message::CropHeightChanged)
-                                    .size(16)
-                                    .style(style::text_input),
-                            ]
-                            .align_y(Alignment::Center),
-                        ])
-                        .padding(10),
-                        button(text("Do the cropping!").size(16).center())
-                            .on_press(Message::TryCrop)
-                            .width(Fill)
-                            .height(24)
-                            .style(style::button_rounded_bottom_full)
-                    ]
-                    .height(Shrink)
-                    .width(Fill),
-                )
-                .style(style::container_medium_rounded)
-                .width(Shrink)
-                .height(Shrink)
-                .into()
-            }
-            Some(Screen::Trim(trim_info)) => container(
-                column![
-                    container(column![
-                        row![
-                            text("Trim start frame:"),
-                            text_input("", &trim_info.start_frame_text)
-                                .width(100)
-                                .on_input(Message::TrimStartTimeChanged)
-                                .style(style::text_input),
-                            button("Set to now")
-                                .on_press(Message::SetTrimStartToNow)
-                                .style(style::button_full)
-                        ].align_y(Center),
-                        row![
-                            text("Trim end frame:"),
-                            text_input("", &trim_info.end_frame_text)
-                                .width(100)
-                                .on_input(Message::TrimEndTimeChanged)
-                                .style(style::text_input),
-                            button("Set to now")
-                                .on_press(Message::SetTrimEndToNow)
-                                .style(style::button_full)
-                        ].align_y(Center),
-                    ])
-                    .padding(10),
-                    button(text("Do the trimming!").size(16).center())
-                        .on_press(Message::TryTrim)
-                        .width(Fill)
-                        .height(24)
-                        .style(style::button_rounded_bottom_full),
-                ]
-                .height(Shrink)
-                .width(Fill),
-            )
-            .style(style::container_medium_rounded)
-            .width(Shrink)
-            .height(Shrink)
-            .into(),
-            Some(Screen::Scale(scale_info)) => container(
-                column![
-                    container(column![
-                        row![
-                            text("Target scale: ").size(16).center(),
-                            text_input("1", &scale_info.text_width)
-                                .width(100)
-                                .on_input_maybe(if scale_info.keep_aspect_ratio {
-                                    None
-                                } else {
-                                    Some(Message::ScaleWidthChanged)
-                                })
-                                .size(16)
-                                .style(style::text_input),
-                            Space::new().width(20),
-                            text_input("1", &scale_info.text_height)
-                                .width(100)
-                                .on_input_maybe(if scale_info.keep_aspect_ratio {
-                                    None
-                                } else {
-                                    Some(Message::ScaleHeightChanged)
-                                })
-                                .size(16)
-                                .style(style::text_input),
-                        ]
-                        .align_y(Alignment::Center),
-                        row![
-                            button(text("Keep aspect ratio").size(13)).on_press(
-                                Message::KeepAspectRatioToggled(!scale_info.keep_aspect_ratio)
-                            ),
-                            text("Proportion: ").size(16).center(),
-                            text_input("1", &scale_info.text_prop)
-                                .width(100)
-                                .on_input_maybe(if scale_info.keep_aspect_ratio {
-                                    Some(Message::ScaleProportionChanged)
-                                } else {
-                                    None
-                                })
-                                .size(16)
-                                .style(style::text_input),
-                        ]
-                        .align_y(Alignment::Center),
-                    ])
-                    .padding(10),
-                    button(text("Do the scaling!").size(16).center())
-                        .on_press(Message::TryScale)
-                        .width(Fill)
-                        .height(24)
-                        .style(style::button_rounded_bottom_full)
-                ]
-                .height(Shrink)
-                .width(Fill),
-            )
-            .style(style::container_medium_rounded)
-            .width(Shrink)
-            .height(Shrink)
-            .into(),
-            Some(Screen::Pipeline) => {
-                if let Some(pipeline) = self.pipeline.as_ref() {
-                    pipeline.view()
-                } else {
-                    text("Can't show pipeline because something horrible is happening").into()
-                }
-            }
-            None => text("Select an operation").into(),
-        };
-        container(elt)
-            .height(Shrink)
-            .width(Fill)
-            .style(style::container_color)
-            .padding(10)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -1009,6 +428,13 @@ impl Counter {
                             } else {
                                 style::button_rounded_options_deselected
                             }),
+                        button("Volume")
+                            .on_press(Message::GoToScreen(Some(ScreenName::Volume)))
+                            .style(if matches!(self.screen, Some(Screen::Volume(_))) {
+                                style::button_rounded_options_selected
+                            } else {
+                                style::button_rounded_options_deselected
+                            }),
                         button("Pipeline")
                             .on_press(Message::GoToScreen(Some(ScreenName::Pipeline)))
                             .style(if matches!(self.screen, Some(Screen::Pipeline)) {
@@ -1030,7 +456,7 @@ impl Counter {
                 .style(style::container_color),
             );
 
-            col = col.push(self.view_screen());
+            col = col.push(screens::view_screen(self));
 
             col = col.push(self.view_video_player(video));
 
@@ -1117,7 +543,7 @@ impl Counter {
                 self.screen = if let Some(vid) = self.video.as_ref()
                     && let Some(screen_name) = screen_name
                 {
-                    Some(screen_name.to_screen(vid))
+                    Some(screen_name.to_screen(&vid.player))
                 } else {
                     None
                 };
@@ -1224,7 +650,7 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Trimming video...".to_string());
-                    trim_info.fit_to_bounds(video, true);
+                    trim_info.fit_to_bounds(&video.player, true);
 
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
@@ -1477,7 +903,7 @@ impl Counter {
                     self.bottom_bar
                         .set_in_progress("Cropping video...".to_string());
                     let top_left_pixel = crop_info.convert_top_left(&video.player);
-                    crop_info.fit_to_bounds(video, true);
+                    crop_info.fit_to_bounds(&video.player, true);
 
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
@@ -1577,7 +1003,7 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Scaling video...".to_string());
-                    scale_info.fit_to_bounds(video, true);
+                    scale_info.fit_to_bounds(&video.player, true);
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
                     let pipeline_step = pipeline.get_next_pipeline_step();
@@ -1652,16 +1078,76 @@ impl Counter {
                         Some(new_buf) => {
                             self.video = Some(VideoInfo::new(new_buf));
                             pipeline.destroy_steps_after(idx);
-                        },
-                        None => self.bottom_bar.set_error(format!("Pipeline lacked step {}", idx)),
+                        }
+                        None => self
+                            .bottom_bar
+                            .set_error(format!("Pipeline lacked step {}", idx)),
                     }
-                    
                 } else {
                     self.bottom_bar
                         .set_error("Tried to revert to pipeline when none exists?".to_string());
                 }
                 Task::none()
             }
+            Message::VolumePropChanged(new_val) => {
+                if let Some(Screen::Volume(volume_info)) = self.screen.as_mut() {
+                    restrict_to_f32_input(new_val, &mut volume_info.text_prop, &mut volume_info.prop, 0f32, f32::MAX);
+                }
+                Task::none()
+               
+            },
+            Message::TryVolume => {
+                if let Some(video) = self.video.as_ref()
+                    && let Some(Screen::Volume(volume_info)) = self.screen.as_mut()
+                    && let Some(pipeline) = self.pipeline.as_ref()
+                {
+                    self.bottom_bar
+                        .set_in_progress("Changing volume of video...".to_string());
+                    volume_info.fit_to_bounds(&video.player, true);
+                    let video_path = video.path.clone();
+                    let tempdir_path = pipeline.get_tempdir_path();
+                    let pipeline_step = pipeline.get_next_pipeline_step();
+
+                    
+                        let new_volume = volume_info.prop;
+
+                        Task::perform(
+                            async move {
+                                ffmpeg::change_vid_volume(
+                                    tempdir_path,
+                                    &video_path,
+                                    new_volume,
+                                    pipeline_step,
+                                )
+                            },
+                            Message::VolumeFinished,
+                        )
+                    
+                } else {
+                    Task::none()
+                }
+            },
+            Message::VolumeFinished(res) => {
+                match res {
+                    Ok(path_buf) => {
+                        let pipeline = self
+                            .pipeline
+                            .as_mut()
+                            .expect("Need pipeline to exist here, otherwise issues.");
+
+                        self.video = Some(VideoInfo::new(path_buf.clone()));
+
+                        pipeline.add_from_vid(
+                            path_buf,
+                            pipeline::Operation::Volume,
+                            &self.video.as_ref().unwrap().player,
+                        );
+                        self.bottom_bar.set_normal();
+                    }
+                    Err(e) => self.bottom_bar.set_error(e),
+                }
+                Task::none()
+            },
         }
     }
 }

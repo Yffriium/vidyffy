@@ -1,11 +1,15 @@
 use std::{fs, path::PathBuf};
 
 use iced::{
-    Alignment::Center, Element, Length::{Fill, Shrink}, wgpu::wgc::pipeline, widget::{
+    Alignment::Center,
+    Element,
+    Length::{Fill, Shrink},
+    wgpu::wgc::pipeline,
+    widget::{
         Column, Row, button, column, container,
         scrollable::{Direction, Scrollbar},
         text,
-    }
+    },
 };
 use iced_video_player::Video;
 use tempfile::{TempDir, tempdir};
@@ -157,6 +161,7 @@ pub enum Operation {
     Trim,
     Crop,
     Scale,
+    Volume,
 }
 
 impl Operation {
@@ -166,6 +171,7 @@ impl Operation {
             Operation::Trim => "Trim",
             Operation::Crop => "Crop",
             Operation::Scale => "Scale",
+            Operation::Volume => "Volume",
         }
     }
 }
