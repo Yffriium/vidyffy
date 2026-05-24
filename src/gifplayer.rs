@@ -12,9 +12,12 @@ struct GifInternalState {
     playing: bool,
 
     current_frame: u32,
+    time_from_start: Duration,
 
-    frame_start_playing: Instant,
-    frame_duration: Duration,
+    last_update_time: Instant, // used for dt
+
+    current_duration_in_frame: Duration,
+    goal_duration_in_frame: Duration,
 }
 
 pub struct GifState{
@@ -34,7 +37,7 @@ impl GifState {
 
     pub fn new(frames: Vec<GifFrame>) -> Self {
         Self {
-            internals: RwLock::new(GifInternalState { playing: true, current_frame: 0, frame_start_playing: Instant::now(), frame_duration: Duration::from_millis(100) }), // TODO use first frame data, not 100
+            internals: RwLock::new(GifInternalState { playing: true, current_frame: 0, last_update_time: Instant::now(), goal_duration_in_frame: Duration::from_millis(100), time_from_start: Duration::ZERO, current_duration_in_frame: Duration::ZERO }), // TODO use first frame data, not 100
             frames,
         }
     }
@@ -60,9 +63,13 @@ impl GifState {
         }
         let frame = frame.unwrap();
 
-        inner.frame_duration = frame.duration;
+        inner.current_duration_in_frame = Duration::ZERO;
+        inner.goal_duration_in_frame = frame.duration;
         inner.current_frame = value;
-        inner.frame_start_playing = Instant::now();
+        inner.last_update_time = Instant::now();
+        inner.time_from_start = todo!(); // TODO do this
+
+        
     }
 
     /// expensive seek!
@@ -79,14 +86,25 @@ impl GifState {
         loop {
             let current_frame = &self.frames[inner.current_frame as usize];
             if remaining_dur < current_frame.duration {
-                inner.frame_duration = current_frame.duration;
-                inner.frame_start_playing = Instant::now() - remaining_dur;
+                inner.goal_duration_in_frame = current_frame.duration;
+                inner.current_duration_in_frame = remaining_dur;
+                inner.time_from_start = duration; // TODO not very good at all
+                inner.last_update_time = Instant::now();
                 break;
             } else {
                 remaining_dur -= current_frame.duration;
                 inner.current_frame = (inner.current_frame + 1) % num_frames as u32;
             }
         }
+    }
+
+    // expensive to discover!
+    pub fn duration(&self) -> Duration {
+        self.frames.iter().fold(Duration::ZERO, |acc, elt| acc + elt.duration)
+    }
+
+    pub fn time_from_start(&self) -> Duration {
+        self.read().time_from_start
     }
     
 
@@ -104,7 +122,7 @@ pub struct GifPlayer<'a, Message> {
     gif_state: &'a GifState,
     width: Length,
     height: Length,
-    on_advance_frame: Option<Box<dyn Fn(u32) -> Message + 'a>>,
+    on_advance_frame: Option<Box<dyn Fn(u32, Duration) -> Message + 'a>>,
     content_fit: ContentFit,
     frame_width: u16,
     frame_height: u16,
@@ -131,7 +149,7 @@ impl<'a> GifPlayer<'a, Message> {
         self
     }
 
-    pub fn on_advance_frame(mut self, on_advance_frame: impl Fn(u32) -> Message + 'a) -> Self {
+    pub fn on_advance_frame(mut self, on_advance_frame: impl Fn(u32, Duration) -> Message + 'a) -> Self {
         self.on_advance_frame = Some(Box::new(on_advance_frame));
         self
     }
@@ -230,18 +248,29 @@ impl <'a> Widget<Message, Theme, Renderer> for GifPlayer<'a, Message> {
         shell: &mut iced::advanced::Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-
-        let mut gif_state = self.gif_state.write();
-
+        
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
+            let mut gif_state = self.gif_state.write();
+
             // push next 
+            let dt = *now - gif_state.last_update_time;
+            gif_state.last_update_time = *now;
+
+            // eprintln!("Update {}", dt.as_secs_f64());
+
             if gif_state.playing {
 
-                let frame_dur = gif_state.frame_duration;
+                
+                
+
+                gif_state.current_duration_in_frame += dt;
+                gif_state.time_from_start += dt;
+
             
-                if *now - gif_state.frame_start_playing >= frame_dur {
+                while gif_state.current_duration_in_frame >= gif_state.goal_duration_in_frame {
+                    let sub_amt = gif_state.goal_duration_in_frame;
+                    gif_state.current_duration_in_frame -= sub_amt;
                     
-                    gif_state.frame_start_playing += frame_dur;
 
 
                     // this block does one of the following.
@@ -252,22 +281,23 @@ impl <'a> Widget<Message, Theme, Renderer> for GifPlayer<'a, Message> {
                     //  maybe this case can be made impossible by disallowing all hiddens
                     let orig = gif_state.current_frame;
                     loop {
-                        gif_state.current_frame = (gif_state.current_frame + 1) % self.gif_state.frames.len() as u32;
+                        gif_state.current_frame = gif_state.current_frame + 1;
+                        if gif_state.current_frame as usize >= self.gif_state.frames.len() {
+                            gif_state.current_frame = 0;
+                            gif_state.time_from_start = gif_state.current_duration_in_frame;
+                        }
                         if !self.gif_state.frames[gif_state.current_frame as usize].hidden || gif_state.current_frame == orig {
                             break;
                         }
                     }
 
                 
-                    gif_state.frame_duration = self.gif_state.frames[gif_state.current_frame as usize].duration;
+                    gif_state.goal_duration_in_frame = self.gif_state.frames[gif_state.current_frame as usize].duration;
                     if let Some(on_advance_frame) = &self.on_advance_frame {
-                        let msg = on_advance_frame(gif_state.current_frame);
+                        let msg = on_advance_frame(gif_state.current_frame, gif_state.time_from_start);
                         shell.publish(msg);
                     }
                 }
-            } else {
-                // not playing, just set start time to now
-                // gif_state.frame_start_playing = *now;
             }
 
 

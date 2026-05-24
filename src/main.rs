@@ -177,13 +177,16 @@ impl VideoData {
                                 hidden: false,
                             }})
                     .collect();
-                
-                let duration = 0f64; // TODO duration!!
+
                 let num_frames = frames.len() as u32;
 
+                let gif_state = crate::gifplayer::GifState::new(frames);
+                
+                let duration = gif_state.duration().as_secs_f64(); // TODO duration!!
+                
                 Ok(Self {
                     path: path_buf,
-                    kind: VideoKind::Gif { player_state: crate::gifplayer::GifState::new(frames)},
+                    kind: VideoKind::Gif { player_state: gif_state},
                     duration,
                     width,
                     height,
@@ -322,7 +325,7 @@ pub enum Message {
 
     /// Converts frames in gif video to a gif
     FramesToGif,
-    OnNewGifFrame(u32),
+    OnNewGifFrame(u32, Duration),
     GifFrameSetDuration{idx: usize, new_duration_centiseconds: u32},
     GifFrameSetHidden{idx: usize, hidden: bool},
     GifFrameCopy{idx: usize},
@@ -1419,10 +1422,13 @@ impl Counter {
                 Task::none()
             }
             Message::FramesToGif => todo!(),
-            Message::OnNewGifFrame(next_frame_idx) => {
-                if let Some(VideoData { current_time, kind, .. }) = self.video.as_mut() && let VideoKind::Gif {player_state, ..} = kind {
-                    // TODO update current_time
-                
+            Message::OnNewGifFrame(next_frame_idx, time_from_start) => {
+                if let Some(VideoData { current_time, kind, .. }) = self.video.as_mut() {
+                    *current_time = time_from_start.as_secs_f64();
+                    if let VideoKind::Gif {player_state, ..} = kind {
+                        // ??? what todo here?
+
+                    }
                 }
 
                 Task::none()
