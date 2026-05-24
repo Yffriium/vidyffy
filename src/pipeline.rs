@@ -30,17 +30,15 @@ impl Pipeline {
         self.pipeline.len()
     }
 
-    pub fn new(path: PathBuf, video: &Video) -> Self {
-        let size = video.size();
-
+    pub fn new(path: PathBuf, width: u16, height: u16, duration: f64) -> Self {
         Self {
             pipeline: vec![PipelineEntry {
                 step_num: 0,
                 path,
                 operation: Operation::Default,
-                width: size.0 as u32,
-                height: size.1 as u32,
-                duration: video.duration().as_secs_f64(),
+                width,
+                height,
+                duration,
             }],
             tempdir: tempdir().expect("Could not make a tempdir. Need more space."),
         }
@@ -50,8 +48,8 @@ impl Pipeline {
         &mut self,
         path: PathBuf,
         operation: Operation,
-        width: u32,
-        height: u32,
+        width: u16,
+        height: u16,
         duration: f64,
     ) {
         let pipeline_size = self.pipeline.len();
@@ -62,20 +60,6 @@ impl Pipeline {
             width,
             height,
             duration,
-        });
-    }
-
-    pub fn add_from_vid(&mut self, path: PathBuf, operation: Operation, video: &Video) {
-        let pipeline_size = self.pipeline.len();
-        let vid_size = video.size();
-        let vid_duration = video.duration().as_secs_f64();
-        self.pipeline.push(PipelineEntry {
-            step_num: pipeline_size,
-            path,
-            operation,
-            width: vid_size.0 as u32,
-            height: vid_size.1 as u32,
-            duration: vid_duration,
         });
     }
 
@@ -150,8 +134,8 @@ pub struct PipelineEntry {
     step_num: usize,
     path: PathBuf,
     operation: Operation,
-    width: u32,
-    height: u32,
+    width: u16,
+    height: u16,
     duration: f64,
 }
 

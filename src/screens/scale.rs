@@ -8,7 +8,7 @@ use iced::{
 };
 
 use crate::{
-    Message,
+    Message, VideoData,
     screens::{DefaultScreen, Viewable},
     style,
 };
@@ -25,21 +25,22 @@ pub struct ScaleInfo {
 }
 
 impl DefaultScreen for ScaleInfo {
-    fn from_video(video: &Video) -> Self {
-        let vid_size = video.size();
+    fn from_video(video: &VideoData) -> Self {
+        let vid_width = video.width;
+        let vid_height = video.height;
 
         Self {
-            width: vid_size.0 as u32,
-            text_width: vid_size.0.to_string(),
-            height: vid_size.1 as u32,
-            text_height: vid_size.1.to_string(),
+            width: vid_width as u32,
+            text_width: vid_width.to_string(),
+            height: vid_height as u32,
+            text_height: vid_height.to_string(),
             prop: 1.0f32,
             text_prop: "1.0".to_string(),
             keep_aspect_ratio: true,
         }
     }
 
-    fn fit_to_bounds(&mut self, video: &Video, update_text: bool) {
+    fn fit_to_bounds(&mut self, video: &VideoData, update_text: bool) {
         if self.keep_aspect_ratio {
             if self.prop <= 0.0f32 {
                 self.prop = 1.0f32;
@@ -47,9 +48,8 @@ impl DefaultScreen for ScaleInfo {
                     self.text_prop = "1.0".to_string();
                 }
             }
-            let vid_size = video.size();
-            self.width = (vid_size.0 as f32 * self.prop).round() as u32;
-            self.height = (vid_size.1 as f32 * self.prop).round() as u32;
+            self.width = (video.width as f32 * self.prop).round() as u32;
+            self.height = (video.height as f32 * self.prop).round() as u32;
             if update_text {
                 self.text_width = self.width.to_string();
                 self.text_height = self.height.to_string();

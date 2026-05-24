@@ -9,7 +9,7 @@ use iced::{
 use iced_video_player::Video;
 
 use crate::{
-    Message,
+    Message, VideoData,
     screens::{DefaultScreen, Viewable},
     style,
 };
@@ -18,14 +18,14 @@ use crate::{
 #[derive(Default, Debug)]
 pub struct CropInfo {
     pub crop_mode: CropMode,
-    pub width: u32,
-    pub height: u32,
+    pub width: u16,
+    pub height: u16,
     pub text_width: String,
     pub text_height: String,
 }
 
 impl CropInfo {
-    pub fn get_top_left_pixel(&self, video: &Video) -> (u32, u32) {
+    pub fn get_top_left_pixel(&self, video: &VideoData) -> (u16, u16) {
         match self.crop_mode {
             CropMode::TopLeft { x, y, .. } => (x, y),
             CropMode::PixelCenter { x, y, .. } => (
@@ -33,8 +33,7 @@ impl CropInfo {
                 y.saturating_sub(self.height / 2),
             ),
             CropMode::VideoCenter => {
-                let vid_size = video.size();
-                let center_loc = (vid_size.0 as u32 / 2, vid_size.1 as u32 / 2);
+                let center_loc = (video.width / 2, video.height / 2);
                 (
                     center_loc.0.saturating_sub(self.width / 2),
                     center_loc.1.saturating_sub(self.height / 2),
@@ -44,7 +43,7 @@ impl CropInfo {
     }
     /// From whatever crop_type we have, changes to CropType::TopLeft
     /// Also returns top left pixel
-    pub fn convert_top_left(&mut self, video: &Video) -> (u32, u32) {
+    pub fn convert_top_left(&mut self, video: &VideoData) -> (u16, u16) {
         let top_left = self.get_top_left_pixel(video);
         self.crop_mode = CropMode::TopLeft {
             x: top_left.0,
@@ -55,7 +54,7 @@ impl CropInfo {
         top_left
     }
 
-    pub fn convert_to(&mut self, video: &Video, target: CropModeKind) {
+    pub fn convert_to(&mut self, video: &VideoData, target: CropModeKind) {
         // first, go to top left
         let top_left_pixel = self.convert_top_left(video);
         // then, convert from top left to target
@@ -79,14 +78,14 @@ impl CropInfo {
 #[derive(Debug)]
 pub enum CropMode {
     TopLeft {
-        x: u32,
-        y: u32,
+        x: u16,
+        y: u16,
         text_x: String,
         text_y: String,
     },
     PixelCenter {
-        x: u32,
-        y: u32,
+        x: u16,
+        y: u16,
         text_x: String,
         text_y: String,
     },
@@ -130,23 +129,20 @@ impl Display for CropModeKind {
 }
 
 impl DefaultScreen for CropInfo {
-    fn from_video(video: &Video) -> Self {
-        let vid_size = video.size();
-
+    fn from_video(video: &VideoData) -> Self {
         Self {
             crop_mode: CropMode::default(),
 
-            width: vid_size.0 as u32,
-            height: vid_size.1 as u32,
-            text_width: vid_size.0.to_string(),
-            text_height: vid_size.1.to_string(),
+            width: video.width,
+            height: video.height,
+            text_width: video.width.to_string(),
+            text_height: video.height.to_string(),
         }
     }
 
-    fn fit_to_bounds(&mut self, video: &Video, update_text: bool) {
-        let vid_size = video.size();
-        let vid_width = vid_size.0 as u32;
-        let vid_height = vid_size.1 as u32;
+    fn fit_to_bounds(&mut self, video: &VideoData, update_text: bool) {
+        let vid_width = video.width;
+        let vid_height = video.height;
         match &mut self.crop_mode {
             CropMode::VideoCenter => {
                 if self.width > vid_width {
@@ -244,8 +240,8 @@ impl DefaultScreen for CropInfo {
                     }
                 }
 
-                let max_width_value = u32::min(*x, vid_width.saturating_sub(*x));
-                let max_height_value = u32::min(*y, vid_height.saturating_sub(*y));
+                let max_width_value = u16::min(*x, vid_width.saturating_sub(*x));
+                let max_height_value = u16::min(*y, vid_height.saturating_sub(*y));
 
                 if self.width == 0 {
                     self.width = 1;

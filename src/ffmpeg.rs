@@ -172,10 +172,10 @@ pub fn trim_vid(
 pub fn crop_vid(
     tempdir: PathBuf,
     input_vid: &Path,
-    x_left: u32,
-    y_top: u32,
-    width: u32,
-    height: u32,
+    x_left: u16,
+    y_top: u16,
+    width: u16,
+    height: u16,
     pipeline_step: usize,
 ) -> Result<PathBuf, String> {
     let output_path = tempdir.join(format!("crop_{}.mkv", pipeline_step));
@@ -315,7 +315,6 @@ pub fn scale_vid_prop(
     }
 }
 
-
 pub fn change_vid_volume(
     tempdir: PathBuf,
     input_vid: &Path,
@@ -360,9 +359,6 @@ pub fn change_vid_volume(
     if output.status.success() {
         Ok(output_path)
     } else {
-        Err(
-            "ffmpeg ran during volume change, but could not process. Invalid input."
-                .to_string(),
-        )
+        Err("ffmpeg ran during volume change, but could not process. Invalid input.".to_string())
     }
 }

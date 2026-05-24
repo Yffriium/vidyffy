@@ -1,6 +1,6 @@
 [package]
 name = "vidyffy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -10,3 +10,4 @@ rfd = "0.17.2"
 iced_video_player = { git = "https://github.com/jazzfool/iced_video_player", rev = "a822ce08757c949a5e49298e63c5ad2e16c2bd3c"}
 url = "2"
 tempfile = "3.27.0"
+gif = "0.14.2"

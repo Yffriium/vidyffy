@@ -2,7 +2,9 @@ mod ffmpeg;
 mod pipeline;
 mod screens;
 mod style;
+mod gifplayer;
 
+use iced::widget::image::Handle;
 use screens::ScreenName;
 
 use iced::Length::{Fill, Shrink};
@@ -23,6 +25,7 @@ use std::time::Duration;
 use std::{fmt::Display, path::PathBuf};
 use url::Url;
 
+use crate::gifplayer::{GifFrame, GifPlayer};
 use crate::pipeline::Pipeline;
 use crate::screens::Screen;
 use crate::screens::crop::CropMode;
@@ -119,46 +122,119 @@ impl<Message> canvas::Program<Message> for RectOverlay {
     }
 }
 
-pub struct VideoInfo {
+pub struct VideoData {
     path: PathBuf,
-    player: Video,
+    duration: f64,
     current_time: f64,
-    max_time: f64,
+    frames: u32,
+    width: u16,
+    height: u16,
+    kind: VideoKind,
 }
 
-impl VideoInfo {
-    pub fn new(path_buf: PathBuf) -> Self {
-        let url = match Url::from_file_path(&path_buf) {
-            Ok(r) => r,
-            Err(_) => panic!(
-                "Could not load URL from path_buf {}",
-                path_buf.to_str().unwrap()
-            ),
-        };
-        let player = match Video::new(&url) {
-            Ok(r) => r,
-            Err(e) => {
-                println!(
-                    "Exists? {}",
-                    url.to_file_path()
-                        .expect("URL file path couldnt be made?!")
-                        .exists()
-                );
-                println!("URL: {:?}", url);
-                panic!("Could not make video player from URL {:?}", e);
+pub enum VideoKind {
+    Video { player: Video },
+    Gif { player_state: gifplayer::GifState },
+}
+
+impl VideoData {
+    pub fn new(path_buf: PathBuf) -> Result<Self, String> {
+        match path_buf.extension().map(|elt| elt.to_str()) {
+            Some(Some("gif")) => {
+                // make gif player
+                let mut opts = gif::DecodeOptions::new();
+                opts.set_color_output(gif::ColorOutput::RGBA);
+
+                let file = match std::fs::File::open(path_buf.clone()) {
+                    Ok(f) => f,
+                    Err(e) => return Err(format!("Could not open file. {}", e)),
+                };
+
+                let decoder = match opts.read_info(file) {
+                    Ok(f) => f,
+                    Err(e) => return Err(format!("Could not decode gif info. {}", e)),
+                };
+
+                let mut width = 0;
+                let mut height = 0;
+
+                let frames: Vec<gifplayer::GifFrame> = decoder
+                    .into_iter()
+                    .filter_map(|elt| {
+                        if elt.is_ok() {
+                            Some(elt.unwrap())
+                        } else {
+                            None
+                        }
+                    })
+                    // .map(|elt| elt.to_owned())
+                    .map(|elt| {
+                        width = elt.width;
+                        height = elt.height;
+                            gifplayer::GifFrame {
+                                handle: Handle::from_rgba(elt.width as u32, elt.height as u32, elt.buffer.to_vec()),
+                                duration: Duration::from_millis(10 * elt.delay as u64),
+                                hidden: false,
+                            }})
+                    .collect();
+                
+                let duration = 0f64; // TODO duration!!
+                let num_frames = frames.len() as u32;
+
+                Ok(Self {
+                    path: path_buf,
+                    kind: VideoKind::Gif { player_state: crate::gifplayer::GifState::new(frames)},
+                    duration,
+                    width,
+                    height,
+                    frames: num_frames,
+                    current_time: 0f64,
+                })
             }
-        };
-        let max_time = player.duration().as_secs_f64();
-        Self {
-            path: path_buf,
-            player,
-            current_time: 0f64,
-            max_time,
+            _ => {
+                // make video player
+                let url = match Url::from_file_path(&path_buf) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Err(format!(
+                            "Could not load URL from path_buf {}",
+                            path_buf.to_str().unwrap()
+                        ));
+                    }
+                };
+                let player = match Video::new(&url) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!(
+                            "Exists? {}",
+                            url.to_file_path()
+                                .expect("URL file path couldnt be made?!")
+                                .exists()
+                        );
+                        println!("URL: {:?}", url);
+                        panic!("Could not make video player from URL {:?}", e);
+                    }
+                };
+                let duration = player.duration().as_secs_f64();
+                let frames = f64::floor(player.framerate() * duration) as u32;
+                let size = player.size();
+                let width = size.0 as u16;
+                let height = size.1 as u16;
+                Ok(Self {
+                    path: path_buf,
+                    kind: VideoKind::Video { player },
+                    duration,
+                    frames,
+                    width,
+                    height,
+                    current_time: 0f64,
+                })
+            }
         }
     }
 }
 struct Counter {
-    video: Option<VideoInfo>,
+    video: Option<VideoData>,
     screen: Option<Screen>,
     pipeline: Option<Pipeline>,
     bottom_bar: BottomBar,
@@ -180,25 +256,50 @@ impl Default for Counter {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// When the user clicks the "Open" button to start a new pipeline on a file.
     OpenFile,
+    /// Callback for when the user selects a file from the system explorer.
     FileSelected(PathBuf),
+    /// Callback for when the user deselects a file?
+    /// Seems to not be used currently.
     FileDeselected,
-    OnEndOfVideo,
-    OnNewFrame,
-    OnPause,
-    OnPlay,
-    OnSetMute(bool),
-    OnSetVolume(f64),
+
+    /// Called when VideoPlayer ends (should loop video)
+    VideoPlayerEnds,
+    /// Called when the VideoPlayer advances to a new frame
+    VideoPlayerNewFrame,
+    /// Sets whether the current video is playing or not
+    SetPlaying(bool),
+    /// Sets whether the current video is muted or not
+    SetMute(bool),
+    /// Sets the volume of the current player
+    VideoPlayerSetVolume(f64),
+    /// Goes to default screen by screen name, or goes to no screen,
+    /// closing the panel.
     GoToScreen(Option<ScreenName>),
-    VideoSliderChanged(f64),
+    /// Callback whenever the slider on the player is changed by the user.
+    PlayerSliderChanged(f64),
+    /// Sets the trim start to the current time for the video.
     SetTrimStartToNow,
+    /// Sets the trim end to the current time for the video.
     SetTrimEndToNow,
+    /// Callback whenever user enters their own trim start time.
     TrimStartTimeChanged(String),
+    /// Callback whenever user enters their own trim end time.
     TrimEndTimeChanged(String),
+    /// Steps forward or backward by the given number of frames on the current
+    /// player. Gives best-effort seek with video player when going backwards.
     StepFrames(i32),
+    /// Steps forward or backward by the given number of centiseconds on the
+    /// current player.
+    StepCentiseconds(i32),
+    /// Tries to conduct a trim.
     TryTrim,
+    /// Callback when trim is finished.
     TrimFinished(Result<PathBuf, String>),
+    /// Tries to save.
     TrySave,
+    /// Callback when user selects a save path.
     SaveTo(PathBuf),
     CropLeftChanged(String),
     CropTopChanged(String),
@@ -213,15 +314,24 @@ pub enum Message {
     TryScale,
     ScaleFinished(Result<PathBuf, String>),
     CropTypeSelected(CropModeKind),
+    /// Reverts pipeline to given index
     RevertToPipeline(usize),
     VolumePropChanged(String),
     TryVolume,
     VolumeFinished(Result<PathBuf, String>),
+
+    /// Converts frames in gif video to a gif
+    FramesToGif,
+    OnNewGifFrame(u32),
+    GifFrameSetDuration{idx: usize, new_duration_centiseconds: u32},
+    GifFrameSetHidden{idx: usize, hidden: bool},
+    GifFrameCopy{idx: usize},
+    GifFrameSwap{source_idx: usize, dest_idx: usize},
 }
 
 fn pick_file() -> Option<PathBuf> {
     FileDialog::new()
-        .add_filter("Video", &["mp4", "mkv", "avi", "mov"])
+        .add_filter("Video", &["mp4", "mkv", "avi", "mov", "gif"])
         .pick_file()
 }
 
@@ -253,127 +363,245 @@ fn contain_rect(outer: iced::Size, video_aspect: f32) -> Rectangle {
 }
 
 impl Counter {
-    fn view_video_player<'a>(&'a self, video: &'a VideoInfo) -> Container<'a, Message> {
-        let play_pause_button = if video.player.paused() {
-            button(text("Play").center().size(15)).on_press(Message::OnPlay)
-        } else {
-            button(text("Pause").center().size(15)).on_press(Message::OnPause)
-        }
-        .style(style::button_full);
+    fn view_video_player<'a>(&'a self, video: &'a VideoData) -> Container<'a, Message> {
+        match &video.kind {
+            VideoKind::Video { player } => {
+                let play_pause_button = if player.paused() {
+                    button(text("Play").center().size(15)).on_press(Message::SetPlaying(true))
+                } else {
+                    button(text("Pause").center().size(15)).on_press(Message::SetPlaying(false))
+                }
+                .style(style::button_full);
 
-        let mute_unmute_button = if video.player.muted() {
-            button(text("Unmute").center().size(13)).on_press(Message::OnSetMute(false))
-        } else {
-            button(text("Mute").center().size(13)).on_press(Message::OnSetMute(true))
-        }
-        .width(Shrink)
-        .height(Fill)
-        .style(style::button_full);
-
-        let player_bar = container(
-            row![
-                play_pause_button,
-                slider(
-                    0f64..=video.max_time,
-                    video.current_time,
-                    Message::VideoSliderChanged
-                )
-                .step(1f64 / video.player.framerate())
-                .width(Fill)
-                .style(style::slider_full),
-                text(format!("{:.1} / {:.1}", video.current_time, video.max_time))
-                    .center()
-                    .size(15),
-                button(text("<").size(15).center())
-                    .on_press(Message::StepFrames(-1))
-                    .width(Shrink)
-                    .height(Fill)
-                    .style(style::button_full),
-                button(text(">").size(15).center())
-                    .on_press(Message::StepFrames(1))
-                    .width(Shrink)
-                    .height(Fill)
-                    .style(style::button_full),
-            ]
-            .spacing(5)
-            .height(25)
-            .width(Fill),
-        )
-        .width(Fill)
-        .height(Shrink)
-        .style(style::container_medium);
-
-        let video_size = video.player.size();
-        let video_aspect = video_size.0 as f32 / video_size.1 as f32;
-
-        let stats_bar = container(
-            row![
-                text(format!("{}x{}", video_size.0, video_size.1))
-                    .size(13)
-                    .center()
-                    .width(Shrink)
-                    .height(Fill),
-                mute_unmute_button,
-            ]
-            .height(20)
-            .spacing(3)
-            .width(Fill),
-        )
-        .style(style::container_medium)
-        .width(Fill)
-        .height(Shrink);
-
-        let mut stack_children: Vec<Element<Message>> = vec![
-            VideoPlayer::new(&video.player)
-                .width(Fill)
+                let mute_unmute_button = if player.muted() {
+                    button(text("Unmute").center().size(13)).on_press(Message::SetMute(false))
+                } else {
+                    button(text("Mute").center().size(13)).on_press(Message::SetMute(true))
+                }
+                .width(Shrink)
                 .height(Fill)
-                .content_fit(ContentFit::Contain)
-                .on_end_of_stream(Message::OnEndOfVideo)
-                .on_new_frame(Message::OnNewFrame)
-                .into(),
-        ];
+                .style(style::button_full);
 
-        // TODO extract this out of here,
-        // move to screens/crop.rs
-        if let Some(Screen::Crop(crop_info)) = self.screen.as_ref() {
-            let top_left_pixel = crop_info.get_top_left_pixel(&video.player);
-            let x_left_prop = (top_left_pixel.0 as f32 / video_size.0 as f32).clamp(0.0f32, 1.0f32);
-            let y_top_prop = (top_left_pixel.1 as f32 / video_size.1 as f32).clamp(0.0f32, 1.0f32);
+                let player_bar = container(
+                    row![
+                        play_pause_button,
+                        slider(
+                            0f64..=video.duration,
+                            video.current_time,
+                            Message::PlayerSliderChanged
+                        )
+                        .step(1f64 / player.framerate())
+                        .width(Fill)
+                        .style(style::slider_full),
+                        text(format!("{:.1} / {:.1}", video.current_time, video.duration))
+                            .center()
+                            .size(15),
+                        button(text("<").size(15).center())
+                            .on_press(Message::StepFrames(-1))
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
+                        button(text(">").size(15).center())
+                            .on_press(Message::StepFrames(1))
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
+                    ]
+                    .spacing(5)
+                    .height(25)
+                    .width(Fill),
+                )
+                .width(Fill)
+                .height(Shrink)
+                .style(style::container_medium);
 
-            let mut width_prop =
-                (crop_info.width as f32 / video_size.0 as f32).clamp(0.0f32, 1.0f32);
-            let mut height_prop =
-                (crop_info.height as f32 / video_size.1 as f32).clamp(0.0f32, 1.0f32);
+                let video_size = player.size();
+                let video_aspect = video_size.0 as f32 / video_size.1 as f32;
 
-            width_prop = f32::min(width_prop, 1.0f32 - x_left_prop);
-            height_prop = f32::min(height_prop, 1.0f32 - y_top_prop);
+                let stats_bar = container(
+                    row![
+                        text(format!("{}x{}", video_size.0, video_size.1))
+                            .size(13)
+                            .center()
+                            .width(Shrink)
+                            .height(Fill),
+                        mute_unmute_button,
+                    ]
+                    .height(20)
+                    .spacing(3)
+                    .width(Fill),
+                )
+                .style(style::container_medium)
+                .width(Fill)
+                .height(Shrink);
 
-            let overlay = Canvas::new(RectOverlay {
-                rect: NormRect {
-                    x_left: x_left_prop,
-                    y_top: y_top_prop,
-                    width: width_prop,
-                    height: height_prop,
-                },
-                video_aspect_ratio: video_aspect,
-            });
-            stack_children.push(overlay.width(Fill).height(Fill).into());
+                let mut stack_children: Vec<Element<Message>> = vec![
+                    VideoPlayer::new(player)
+                        .width(Fill)
+                        .height(Fill)
+                        .content_fit(ContentFit::Contain)
+                        .on_end_of_stream(Message::VideoPlayerEnds)
+                        .on_new_frame(Message::VideoPlayerNewFrame)
+                        .into(),
+                ];
+
+                // TODO extract this out of here,
+                // move to screens/crop.rs
+                if let Some(Screen::Crop(crop_info)) = self.screen.as_ref() {
+                    let top_left_pixel = crop_info.get_top_left_pixel(&video);
+                    let x_left_prop =
+                        (top_left_pixel.0 as f32 / video_size.0 as f32).clamp(0.0f32, 1.0f32);
+                    let y_top_prop =
+                        (top_left_pixel.1 as f32 / video_size.1 as f32).clamp(0.0f32, 1.0f32);
+
+                    let mut width_prop =
+                        (crop_info.width as f32 / video_size.0 as f32).clamp(0.0f32, 1.0f32);
+                    let mut height_prop =
+                        (crop_info.height as f32 / video_size.1 as f32).clamp(0.0f32, 1.0f32);
+
+                    width_prop = f32::min(width_prop, 1.0f32 - x_left_prop);
+                    height_prop = f32::min(height_prop, 1.0f32 - y_top_prop);
+
+                    let overlay = Canvas::new(RectOverlay {
+                        rect: NormRect {
+                            x_left: x_left_prop,
+                            y_top: y_top_prop,
+                            width: width_prop,
+                            height: height_prop,
+                        },
+                        video_aspect_ratio: video_aspect,
+                    });
+                    stack_children.push(overlay.width(Fill).height(Fill).into());
+                }
+
+                let video_stack = stack(stack_children);
+
+                let video_container = container(video_stack)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center);
+
+                container(column![
+                    video_container,
+                    stats_bar,
+                    player_bar.width(Fill).height(Shrink),
+                ])
+                .style(style::container_dark)
+            }
+            VideoKind::Gif { player_state, .. } => {
+                let play_pause_button = if !player_state.playing() {
+                    button(text("Play").center().size(15)).on_press(Message::SetPlaying(true))
+                } else {
+                    button(text("Pause").center().size(15)).on_press(Message::SetPlaying(false))
+                }
+                .height(Fill).width(Shrink).style(style::button_full);
+
+                let player_bar = container(
+                    row![
+                        play_pause_button,
+                        slider(
+                            0f64..=video.duration,
+                            video.current_time,
+                            Message::PlayerSliderChanged
+                        )
+                        .step(0.01f64) // gifs step by centiseconds
+                        .width(Fill)
+                        .style(style::slider_full),
+                        text(format!("{:.1} / {:.1}", video.current_time, video.duration))
+                            .center()
+                            .size(15),
+                        button(text("<").size(15).center())
+                            .on_press(Message::StepCentiseconds(-1)) // gifs step by centiseconds
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
+                        button(text(">").size(15).center())
+                            .on_press(Message::StepCentiseconds(1)) // gifs step by centiseconds
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
+                    ]
+                    .spacing(5)
+                    .height(25)
+                    .width(Fill),
+                )
+                .width(Fill)
+                .height(Shrink)
+                .style(style::container_medium);
+
+                let video_aspect = video.width as f32 / video.height as f32;
+
+                let stats_bar = container(
+                    row![
+                        text(format!("{}x{}", video.width, video.height))
+                            .size(13)
+                            .center()
+                            .width(Shrink)
+                            .height(Fill),
+                        // mute_unmute_button,
+                    ]
+                    .height(20)
+                    .spacing(3)
+                    .width(Fill),
+                )
+                .style(style::container_medium)
+                .width(Fill)
+                .height(Shrink);
+
+                let mut stack_children: Vec<Element<Message>> = vec![
+                    Element::new(GifPlayer::new(player_state, video.width, video.height)
+                        .width(Fill)
+                        .height(Fill)
+                        .content_fit(ContentFit::Contain)
+                        .on_advance_frame(Message::OnNewGifFrame)),
+                ];
+
+                // TODO extract this out of here,
+                // move to screens/crop.rs
+                if let Some(Screen::Crop(crop_info)) = self.screen.as_ref() {
+                    let top_left_pixel = crop_info.get_top_left_pixel(&video);
+                    let x_left_prop =
+                        (top_left_pixel.0 as f32 / video.width as f32).clamp(0.0f32, 1.0f32);
+                    let y_top_prop =
+                        (top_left_pixel.1 as f32 / video.height as f32).clamp(0.0f32, 1.0f32);
+
+                    let mut width_prop =
+                        (crop_info.width as f32 / video.width as f32).clamp(0.0f32, 1.0f32);
+                    let mut height_prop =
+                        (crop_info.height as f32 / video.height as f32).clamp(0.0f32, 1.0f32);
+
+                    width_prop = f32::min(width_prop, 1.0f32 - x_left_prop);
+                    height_prop = f32::min(height_prop, 1.0f32 - y_top_prop);
+
+                    let overlay = Canvas::new(RectOverlay {
+                        rect: NormRect {
+                            x_left: x_left_prop,
+                            y_top: y_top_prop,
+                            width: width_prop,
+                            height: height_prop,
+                        },
+                        video_aspect_ratio: video_aspect,
+                    });
+                    stack_children.push(overlay.width(Fill).height(Fill).into());
+                }
+
+                let video_stack = stack(stack_children);
+
+                let video_container = container(video_stack)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center);
+
+                container(column![
+                    video_container,
+                    stats_bar,
+                    player_bar.width(Fill).height(Shrink),
+                ])
+                .style(style::container_dark)
+            },
         }
-
-        let video_stack = stack(stack_children);
-
-        let video_container = container(video_stack)
-            .width(Fill)
-            .height(Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center);
-
-        container(column![
-            video_container,
-            stats_bar,
-            player_bar.width(Fill).height(Shrink),
-        ])
-        .style(style::container_dark)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -442,6 +670,13 @@ impl Counter {
                             } else {
                                 style::button_rounded_options_deselected
                             }),
+                        button("Gif")
+                            .on_press(Message::GoToScreen(Some(ScreenName::GifFrames)))
+                            .style(if matches!(self.screen, Some(Screen::GifFrames(_))) {
+                                style::button_rounded_options_selected
+                            } else {
+                                style::button_rounded_options_deselected
+                            }),
                         button("Save")
                             .on_press(Message::TrySave)
                             .style(style::button_rounded_options_deselected),
@@ -497,9 +732,18 @@ impl Counter {
                 None => Task::none(),
             },
             Message::FileSelected(path_buf) => {
-                self.video = Some(VideoInfo::new(path_buf.clone()));
-                let player = &self.video.as_ref().unwrap().player;
-                self.pipeline = Some(Pipeline::new(path_buf, player));
+                let new_vid_data = match VideoData::new(path_buf.clone()) {
+                    Err(e) => {
+                        self.bottom_bar.set_error(e);
+                        return Task::none();
+                    }
+                    Ok(vid) => vid,
+                };
+                let width = new_vid_data.width;
+                let height = new_vid_data.height;
+                let duration = new_vid_data.duration;
+                self.video = Some(new_vid_data); // move
+                self.pipeline = Some(Pipeline::new(path_buf, width, height, duration));
 
                 Task::none()
             }
@@ -508,34 +752,40 @@ impl Counter {
                 self.pipeline = None;
                 Task::none()
             }
-            Message::OnEndOfVideo => Task::none(),
-            Message::OnNewFrame => {
+            Message::VideoPlayerEnds => Task::none(),
+            Message::VideoPlayerNewFrame => {
                 if let Some(vid) = self.video.as_mut() {
-                    vid.current_time = vid.player.position().as_secs_f64();
+                    match &mut vid.kind {
+                        VideoKind::Video { player } => {
+                            vid.current_time = player.position().as_secs_f64();
+                        }
+                        _ => { /* TODO OnNewFrame for gif */ }
+                    }
                 }
                 Task::none()
             }
-            Message::OnPause => {
+            Message::SetPlaying(playing) => {
                 if let Some(vid) = self.video.as_mut() {
-                    vid.player.set_paused(true);
+                    match &mut vid.kind {
+                        VideoKind::Video { player } => player.set_paused(!playing),
+                        VideoKind::Gif { player_state, .. } => player_state.set_playing(playing),
+                    }
                 }
                 Task::none()
             }
-            Message::OnPlay => {
-                if let Some(vid) = self.video.as_mut() {
-                    vid.player.set_paused(false);
+            Message::SetMute(val) => {
+                if let Some(vid) = self.video.as_mut()
+                    && let VideoKind::Video { player, .. } = &mut vid.kind
+                {
+                    player.set_muted(val);
                 }
                 Task::none()
             }
-            Message::OnSetMute(val) => {
-                if let Some(vid) = self.video.as_mut() {
-                    vid.player.set_muted(val);
-                }
-                Task::none()
-            }
-            Message::OnSetVolume(new_volume) => {
-                if let Some(vid) = self.video.as_mut() {
-                    vid.player.set_volume(new_volume);
+            Message::VideoPlayerSetVolume(new_volume) => {
+                if let Some(vid) = self.video.as_mut()
+                    && let VideoKind::Video { player, .. } = &mut vid.kind
+                {
+                    player.set_volume(new_volume);
                 }
                 Task::none()
             }
@@ -543,34 +793,35 @@ impl Counter {
                 self.screen = if let Some(vid) = self.video.as_ref()
                     && let Some(screen_name) = screen_name
                 {
-                    Some(screen_name.to_screen(&vid.player))
+                    Some(screen_name.to_screen(&vid))
                 } else {
                     None
                 };
                 Task::none()
             }
-            Message::VideoSliderChanged(new_val) => {
-                if let Some(vid) = self.video.as_mut() {
+            Message::PlayerSliderChanged(new_val) => {
+                
+                if let Some(vid) = self.video.as_mut()
+                    && let VideoKind::Video { player, .. } = &mut vid.kind
+                {
                     vid.current_time = new_val;
-                    vid.player
+                    player
                         .seek(std::time::Duration::from_secs_f64(new_val), false)
                         .unwrap(); // TODO deal with this error somehow
                 }
                 Task::none()
             }
             Message::SetTrimStartToNow => {
-                if let Some(vid) = self.video.as_ref() {
+                if let Some(vid) = self.video.as_mut() {
                     if let Some(Screen::Trim(trim_info)) = self.screen.as_mut() {
                         trim_info.start_frame_time = vid.current_time;
                         trim_info.start_frame_text = format!("{:.4}", vid.current_time);
                     }
-                } else {
-                    // ERROR!!! TODO
                 }
                 Task::none()
             }
             Message::SetTrimEndToNow => {
-                if let Some(vid) = self.video.as_ref() {
+                if let Some(vid) = self.video.as_mut() {
                     if let Some(Screen::Trim(trim_info)) = self.screen.as_mut() {
                         trim_info.end_frame_time = vid.current_time;
                         trim_info.end_frame_text = format!("{:.4}", vid.current_time);
@@ -623,20 +874,20 @@ impl Counter {
                 Task::none()
             }
             Message::StepFrames(i) => {
-                if let Some(vid) = self.video.as_mut() {
+                if let Some(vid) = self.video.as_mut()
+                    && let VideoKind::Video { player, .. } = &mut vid.kind
+                {
                     if i > 0 {
                         for _ in 0..i {
-                            vid.player.step_one_frame();
+                            player.step_one_frame();
                         }
-                        vid.current_time = vid.player.position().as_secs_f64();
+                        vid.current_time = player.position().as_secs_f64();
                     } else if i < 0 {
-                        let target_loc: Duration =
-                            vid.player
-                                .position()
-                                .saturating_sub(Duration::from_secs_f64(
-                                    -i as f64 / vid.player.framerate(),
-                                ));
-                        vid.player.seek(target_loc, true).unwrap(); // TODO deal w error
+                        let target_loc: Duration = player.position().saturating_sub(
+                            Duration::from_secs_f64(-i as f64 / player.framerate()),
+                        );
+                        player.seek(target_loc, true).unwrap(); // TODO deal w error
+                        vid.current_time = player.position().as_secs_f64();
                     } else {
                         // do nothing
                     }
@@ -650,7 +901,7 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Trimming video...".to_string());
-                    trim_info.fit_to_bounds(&video.player, true);
+                    trim_info.fit_to_bounds(&video, true);
 
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
@@ -676,17 +927,23 @@ impl Counter {
             Message::TrimFinished(res) => {
                 match res {
                     Ok(path_buf) => {
-                        self.video = Some(VideoInfo::new(path_buf.clone()));
+                        let vid_result = VideoData::new(path_buf.clone());
+                        if let Err(e) = vid_result {
+                            self.bottom_bar.set_error(e);
+                            return Task::none();
+                        };
+                        let vid = vid_result.unwrap();
+                        let width = vid.width;
+                        let height = vid.height;
+                        let duration = vid.duration;
+
+                        self.video = Some(vid); // move vid
                         let pipeline = self
                             .pipeline
                             .as_mut()
                             .expect("Need pipeline to exist here, otherwise issues.");
 
-                        pipeline.add_from_vid(
-                            path_buf,
-                            pipeline::Operation::Trim,
-                            &self.video.as_ref().unwrap().player,
-                        );
+                        pipeline.add(path_buf, pipeline::Operation::Trim, width, height, duration);
 
                         self.bottom_bar.set_normal();
                     }
@@ -817,22 +1074,10 @@ impl Counter {
                 {
                     match &mut crop_info.crop_mode {
                         CropMode::TopLeft { x, text_x, .. } => {
-                            restrict_to_u32_input(
-                                new_val,
-                                text_x,
-                                x,
-                                0u32,
-                                video.player.size().0 as u32,
-                            );
+                            restrict_to_u16_input(new_val, text_x, x, 0u16, video.width);
                         }
                         CropMode::PixelCenter { x, text_x, .. } => {
-                            restrict_to_u32_input(
-                                new_val,
-                                text_x,
-                                x,
-                                0u32,
-                                video.player.size().0 as u32,
-                            );
+                            restrict_to_u16_input(new_val, text_x, x, 0u16, video.width);
                         }
                         CropMode::VideoCenter => { /* not possible */ }
                     }
@@ -845,22 +1090,10 @@ impl Counter {
                 {
                     match &mut crop_info.crop_mode {
                         CropMode::TopLeft { y, text_y, .. } => {
-                            restrict_to_u32_input(
-                                new_val,
-                                text_y,
-                                y,
-                                0u32,
-                                video.player.size().1 as u32,
-                            );
+                            restrict_to_u16_input(new_val, text_y, y, 0u16, video.height);
                         }
                         CropMode::PixelCenter { y, text_y, .. } => {
-                            restrict_to_u32_input(
-                                new_val,
-                                text_y,
-                                y,
-                                0u32,
-                                video.player.size().1 as u32,
-                            );
+                            restrict_to_u16_input(new_val, text_y, y, 0u16, video.height);
                         }
                         CropMode::VideoCenter => { /* not possible */ }
                     }
@@ -871,12 +1104,12 @@ impl Counter {
                 if let Some(Screen::Crop(crop_info)) = self.screen.as_mut()
                     && let Some(video) = self.video.as_ref()
                 {
-                    restrict_to_u32_input(
+                    restrict_to_u16_input(
                         new_val,
                         &mut crop_info.text_width,
                         &mut crop_info.width,
                         0,
-                        video.player.size().0 as u32,
+                        video.width,
                     );
                 }
                 Task::none()
@@ -885,12 +1118,12 @@ impl Counter {
                 if let Some(Screen::Crop(crop_info)) = self.screen.as_mut()
                     && let Some(video) = self.video.as_ref()
                 {
-                    restrict_to_u32_input(
+                    restrict_to_u16_input(
                         new_val,
                         &mut crop_info.text_height,
                         &mut crop_info.height,
                         0,
-                        video.player.size().1 as u32,
+                        video.height,
                     );
                 }
                 Task::none()
@@ -902,8 +1135,8 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Cropping video...".to_string());
-                    let top_left_pixel = crop_info.convert_top_left(&video.player);
-                    crop_info.fit_to_bounds(&video.player, true);
+                    let top_left_pixel = crop_info.convert_top_left(&video);
+                    crop_info.fit_to_bounds(&video, true);
 
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
@@ -938,13 +1171,19 @@ impl Counter {
                             .as_mut()
                             .expect("Need pipeline to exist here, otherwise issues.");
 
-                        self.video = Some(VideoInfo::new(path_buf.clone()));
+                        let vid = VideoData::new(path_buf.clone());
+                        if let Err(e) = vid {
+                            self.bottom_bar.set_error(e);
+                            return Task::none();
+                        }
+                        let vid = vid.unwrap();
+                        let width = vid.width;
+                        let height = vid.height;
+                        let duration = vid.duration;
 
-                        pipeline.add_from_vid(
-                            path_buf,
-                            pipeline::Operation::Crop,
-                            &self.video.as_ref().unwrap().player,
-                        );
+                        self.video = Some(vid);
+
+                        pipeline.add(path_buf, pipeline::Operation::Crop, width, height, duration);
                         self.bottom_bar.set_normal();
                     }
                     Err(e) => self.bottom_bar.set_error(e),
@@ -1003,7 +1242,7 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Scaling video...".to_string());
-                    scale_info.fit_to_bounds(&video.player, true);
+                    scale_info.fit_to_bounds(&video, true);
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
                     let pipeline_step = pipeline.get_next_pipeline_step();
@@ -1050,12 +1289,23 @@ impl Counter {
                             .as_mut()
                             .expect("Need pipeline to exist here, otherwise issues.");
 
-                        self.video = Some(VideoInfo::new(path_buf.clone()));
+                        let vid = VideoData::new(path_buf.clone());
+                        if let Err(e) = vid {
+                            self.bottom_bar.set_error(e);
+                            return Task::none();
+                        }
+                        let vid = vid.unwrap();
+                        let width = vid.width;
+                        let height = vid.height;
+                        let duration = vid.duration;
 
-                        pipeline.add_from_vid(
+                        self.video = Some(vid);
+                        pipeline.add(
                             path_buf,
                             pipeline::Operation::Scale,
-                            &self.video.as_ref().unwrap().player,
+                            width,
+                            height,
+                            duration,
                         );
                         self.bottom_bar.set_normal();
                     }
@@ -1068,7 +1318,7 @@ impl Counter {
                 if let Some(Screen::Crop(crop_info)) = self.screen.as_mut()
                     && let Some(video) = self.video.as_ref()
                 {
-                    crop_info.convert_to(&video.player, crop_type);
+                    crop_info.convert_to(&video, crop_type);
                 }
                 Task::none()
             }
@@ -1076,7 +1326,12 @@ impl Counter {
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     match pipeline.get(idx) {
                         Some(new_buf) => {
-                            self.video = Some(VideoInfo::new(new_buf));
+                            let vid = VideoData::new(new_buf);
+                            if let Err(e) = vid {
+                                self.bottom_bar.set_error(e);
+                                return Task::none();
+                            }
+
                             pipeline.destroy_steps_after(idx);
                         }
                         None => self
@@ -1091,11 +1346,16 @@ impl Counter {
             }
             Message::VolumePropChanged(new_val) => {
                 if let Some(Screen::Volume(volume_info)) = self.screen.as_mut() {
-                    restrict_to_f32_input(new_val, &mut volume_info.text_prop, &mut volume_info.prop, 0f32, f32::MAX);
+                    restrict_to_f32_input(
+                        new_val,
+                        &mut volume_info.text_prop,
+                        &mut volume_info.prop,
+                        0f32,
+                        f32::MAX,
+                    );
                 }
                 Task::none()
-               
-            },
+            }
             Message::TryVolume => {
                 if let Some(video) = self.video.as_ref()
                     && let Some(Screen::Volume(volume_info)) = self.screen.as_mut()
@@ -1103,30 +1363,28 @@ impl Counter {
                 {
                     self.bottom_bar
                         .set_in_progress("Changing volume of video...".to_string());
-                    volume_info.fit_to_bounds(&video.player, true);
+                    volume_info.fit_to_bounds(&video, true);
                     let video_path = video.path.clone();
                     let tempdir_path = pipeline.get_tempdir_path();
                     let pipeline_step = pipeline.get_next_pipeline_step();
 
-                    
-                        let new_volume = volume_info.prop;
+                    let new_volume = volume_info.prop;
 
-                        Task::perform(
-                            async move {
-                                ffmpeg::change_vid_volume(
-                                    tempdir_path,
-                                    &video_path,
-                                    new_volume,
-                                    pipeline_step,
-                                )
-                            },
-                            Message::VolumeFinished,
-                        )
-                    
+                    Task::perform(
+                        async move {
+                            ffmpeg::change_vid_volume(
+                                tempdir_path,
+                                &video_path,
+                                new_volume,
+                                pipeline_step,
+                            )
+                        },
+                        Message::VolumeFinished,
+                    )
                 } else {
                     Task::none()
                 }
-            },
+            }
             Message::VolumeFinished(res) => {
                 match res {
                     Ok(path_buf) => {
@@ -1135,19 +1393,75 @@ impl Counter {
                             .as_mut()
                             .expect("Need pipeline to exist here, otherwise issues.");
 
-                        self.video = Some(VideoInfo::new(path_buf.clone()));
+                        let vid = VideoData::new(path_buf.clone());
+                        if let Err(e) = vid {
+                            self.bottom_bar.set_error(e);
+                            return Task::none();
+                        }
+                        let vid = vid.unwrap();
+                        let width = vid.width;
+                        let height = vid.height;
+                        let duration = vid.duration;
 
-                        pipeline.add_from_vid(
+                        self.video = Some(vid);
+
+                        pipeline.add(
                             path_buf,
                             pipeline::Operation::Volume,
-                            &self.video.as_ref().unwrap().player,
+                            width,
+                            height,
+                            duration,
                         );
                         self.bottom_bar.set_normal();
                     }
                     Err(e) => self.bottom_bar.set_error(e),
                 }
                 Task::none()
+            }
+            Message::FramesToGif => todo!(),
+            Message::OnNewGifFrame(next_frame_idx) => {
+                if let Some(VideoData { current_time, kind, .. }) = self.video.as_mut() && let VideoKind::Gif {player_state, ..} = kind {
+                    // TODO update current_time
+                
+                }
+
+                Task::none()
             },
+            Message::GifFrameSetDuration { idx, new_duration_centiseconds } => {
+                if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, ..} = kind {
+                    if let Some(frame) = player_state.frames.get_mut(idx) {
+                        frame.duration = Duration::from_millis(new_duration_centiseconds as u64 * 10u64);
+                    }
+                }
+                Task::none()
+            },
+            Message::GifFrameSetHidden { idx, hidden } => {
+                if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
+                    if let Some(frame) = player_state.frames.get_mut(idx) {
+                        frame.hidden = hidden;
+                    }
+                }
+                Task::none()
+            },
+            Message::GifFrameCopy { idx } => {
+                if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
+                    if let Some(frame) = player_state.frames.get(idx) {
+                        player_state.frames.insert(idx, GifFrame{
+                            handle: frame.handle.clone(),
+                            duration: frame.duration.clone(),
+                            hidden: frame.hidden.clone(),
+                        });
+                    }
+                }
+                Task::none()
+            },
+            Message::GifFrameSwap { source_idx, dest_idx } => {
+                if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
+                    player_state.frames.swap(source_idx, dest_idx);
+                }
+                Task::none()
+            },
+            Message::StepCentiseconds(_) => todo!(),
         }
     }
 }
@@ -1173,6 +1487,28 @@ pub fn restrict_to_f32_input(
             // TODO print error msg
             *restricted_string = "0.0".to_string();
             *restricted_f32 = 0.0f32;
+        }
+    }
+}
+
+pub fn restrict_to_u16_input(
+    string: String,
+    restricted_string: &mut String,
+    restricted_value: &mut u16,
+    clamp_min: u16,
+    clamp_max: u16,
+) {
+    let string_to_set: String = string.chars().filter(|c| c.is_ascii_digit()).collect();
+    match string_to_set.parse::<u16>() {
+        Ok(parsed_val) => {
+            let clamped_val = parsed_val.clamp(clamp_min, clamp_max);
+            *restricted_string = parsed_val.to_string();
+            *restricted_value = clamped_val;
+        }
+        Err(_) => {
+            // TODO print error msg
+            *restricted_string = "0".to_string();
+            *restricted_value = 0;
         }
     }
 }

@@ -5,9 +5,10 @@ use iced::{
 };
 use iced_video_player::Video;
 
-use crate::{Counter, Message, style};
+use crate::{Counter, Message, VideoData, style};
 
 pub mod crop;
+pub mod gif;
 pub mod scale;
 pub mod trim;
 pub mod volume;
@@ -18,7 +19,8 @@ pub enum Screen {
     Crop(crop::CropInfo),
     Scale(scale::ScaleInfo),
     Pipeline,
-    Volume(volume::VolumeInfo)
+    Volume(volume::VolumeInfo),
+    GifFrames(gif::GifInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -28,21 +30,23 @@ pub enum ScreenName {
     Scale,
     Pipeline,
     Volume,
+    GifFrames,
 }
 
 pub trait DefaultScreen: Sized {
-    fn from_video(video: &Video) -> Self;
-    fn fit_to_bounds(&mut self, video: &Video, update_text: bool);
+    fn from_video(video: &VideoData) -> Self;
+    fn fit_to_bounds(&mut self, video: &VideoData, update_text: bool);
 }
 
 impl ScreenName {
-    pub fn to_screen(self, video: &Video) -> Screen {
+    pub fn to_screen(self, video: &VideoData) -> Screen {
         match self {
             ScreenName::Trim => Screen::Trim(trim::TrimInfo::from_video(video)),
             ScreenName::Crop => Screen::Crop(crop::CropInfo::from_video(video)),
             ScreenName::Scale => Screen::Scale(scale::ScaleInfo::from_video(video)),
             ScreenName::Pipeline => Screen::Pipeline,
             ScreenName::Volume => Screen::Volume(volume::VolumeInfo::from_video(video)),
+            ScreenName::GifFrames => Screen::GifFrames(gif::GifInfo::from_video(video)),
         }
     }
 }
@@ -62,8 +66,9 @@ pub fn view_screen<'a>(counter: &'a Counter) -> Container<'a, Message> {
             } else {
                 text("Can't show pipeline because something horrible is happening").into()
             }
-        },
+        }
         Some(Screen::Volume(volume_info)) => volume_info.view(counter),
+        Some(Screen::GifFrames(frames_info)) => frames_info.view(counter),
         None => text("Select an operation").into(),
     };
     container(elt)

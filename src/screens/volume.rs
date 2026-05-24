@@ -1,6 +1,14 @@
-use iced::{Alignment::Center, Length::{Fill, Shrink}, widget::{button, column, container, row, text, text_input}};
+use iced::{
+    Alignment::Center,
+    Length::{Fill, Shrink},
+    widget::{button, column, container, row, text, text_input},
+};
 
-use crate::{Message, screens::{DefaultScreen, Viewable}, style};
+use crate::{
+    Message, VideoData,
+    screens::{DefaultScreen, Viewable},
+    style,
+};
 
 #[derive(Debug)]
 pub struct VolumeInfo {
@@ -9,18 +17,20 @@ pub struct VolumeInfo {
 }
 
 impl DefaultScreen for VolumeInfo {
-    fn from_video(_video: &iced_video_player::Video) -> Self {
-        Self { prop: 1.0f32, text_prop: "1.0".to_string() }
+    fn from_video(_video: &VideoData) -> Self {
+        Self {
+            prop: 1.0f32,
+            text_prop: "1.0".to_string(),
+        }
     }
 
-    fn fit_to_bounds(&mut self, _video: &iced_video_player::Video, update_text: bool) {
+    fn fit_to_bounds(&mut self, _video: &VideoData, update_text: bool) {
         if self.prop < 0f32 {
             self.prop = 0f32;
             if update_text {
                 self.text_prop = self.prop.to_string();
             }
-        }
-        else if self.prop > 4f32 {
+        } else if self.prop > 4f32 {
             self.prop = 4f32;
             if update_text {
                 self.text_prop = self.prop.to_string();

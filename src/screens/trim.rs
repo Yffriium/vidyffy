@@ -7,7 +7,7 @@ use iced::{
 use iced_video_player::Video;
 
 use crate::{
-    Message,
+    Message, VideoData,
     screens::{DefaultScreen, Viewable},
     style,
 };
@@ -21,9 +21,8 @@ pub struct TrimInfo {
 }
 
 impl DefaultScreen for TrimInfo {
-    fn from_video(video: &Video) -> Self {
-        let vid_duration = video.duration();
-        let last_frame_time = vid_duration.as_secs_f64();
+    fn from_video(video: &VideoData) -> Self {
+        let last_frame_time = video.duration;
 
         Self {
             start_frame_text: "0".to_string(),
@@ -33,14 +32,14 @@ impl DefaultScreen for TrimInfo {
         }
     }
 
-    fn fit_to_bounds(&mut self, video: &Video, update_text: bool) {
+    fn fit_to_bounds(&mut self, video: &VideoData, update_text: bool) {
         if self.start_frame_time <= 0.0f64 {
             self.start_frame_time = 0.0f64;
             if update_text {
                 self.start_frame_text = self.start_frame_time.to_string();
             }
         }
-        let max_dur = video.duration().as_secs_f64();
+        let max_dur = video.duration;
         if self.end_frame_time > max_dur {
             self.end_frame_time = max_dur;
             if update_text {
