@@ -31,7 +31,7 @@ impl Viewable for GifInfo {
             && let VideoKind::Gif { player_state, .. } = &video_data.kind
         {
 
-            scrollable(row(player_state.frames.iter().enumerate().map(|(idx, elt)| {
+            scrollable(row(player_state.frames_iter().enumerate().map(|(idx, elt)| {
                 let centiseconds: u32 = elt.duration.as_millis() as u32 / 10u32;
                 container(
                     column![
@@ -47,8 +47,8 @@ impl Viewable for GifInfo {
                             button("+").on_press(Message::GifFrameSetDuration { idx, new_duration_centiseconds: centiseconds.saturating_add(1) }),
                         ],
                         row![
-                            button("Hide"),
-                            button("Copy"),
+                            button("Hide").on_press(Message::GifFrameSetHidden { idx, hidden: !elt.hidden }),
+                            button("Copy").on_press(Message::GifFrameCopy { idx }),
                         ]
                     ]
                 ).padding(5).into()

@@ -22,7 +22,9 @@ struct GifInternalState {
 
 pub struct GifState{
     internals: RwLock<GifInternalState>,
-    pub frames: Vec<GifFrame>
+    frames: Vec<GifFrame>,
+    num_visible_frames: u32,
+    stored_duration: Duration
 }
 
 impl GifState {
@@ -34,11 +36,21 @@ impl GifState {
         self.internals.read().expect("Read lock")
     }
 
+    /// Based on stored values, recalculates the time from start.
+    /// TODO put this in the right places
+    fn calc_time_from_start(frames: &Vec<GifFrame>, current_frame: usize, current_duration_in_frame: Duration) -> Duration {
+        current_duration_in_frame + frames.iter().take(current_frame).fold(Duration::ZERO, |acc, elt| acc + elt.duration)
+    }
+
 
     pub fn new(frames: Vec<GifFrame>) -> Self {
+        let num_visible_frames = frames.len() as u32;
+        let stored_duration = frames.iter().fold(Duration::ZERO, |acc, elt| acc + elt.duration);
         Self {
             internals: RwLock::new(GifInternalState { playing: true, current_frame: 0, last_update_time: Instant::now(), goal_duration_in_frame: Duration::from_millis(100), time_from_start: Duration::ZERO, current_duration_in_frame: Duration::ZERO }), // TODO use first frame data, not 100
             frames,
+            num_visible_frames,
+            stored_duration
         }
     }
 
@@ -54,6 +66,65 @@ impl GifState {
         self.write().playing = value;
     }
 
+    pub fn get_frame(&self, idx: usize) -> Option<&GifFrame> {
+        self.frames.get(idx)
+    }
+
+    pub fn set_frame_duration(&mut self, idx: usize, duration: Duration) {
+        self.frames.get_mut(idx).map(|elt| {
+            // update stored val
+            self.stored_duration += duration;
+            self.stored_duration -= elt.duration;
+
+            // modify elt
+            elt.duration = duration
+        });
+    }
+
+    pub fn set_frame_hidden(&mut self, idx: usize, hidden: bool) {
+        self.frames.get_mut(idx).map(|elt| {
+            // update stored val
+            if elt.hidden && !hidden {
+                self.num_visible_frames += 1;
+            }
+            if !elt.hidden && hidden {
+                self.num_visible_frames -= 1;
+
+                // TODO need to go to start
+                // self.write().current_frame = 0; // go to start, just for safety
+            }
+
+            // modify elt
+            elt.hidden = hidden
+        });
+    }
+
+    
+
+    // dont expose this bc we need to track changes
+    // pub fn get_frame_mut(&mut self, idx: usize) -> Option<&mut GifFrame> {
+    //     self.frames.get_mut(idx)
+    // }
+
+    pub fn copy_frame_at(&mut self, idx: usize) -> bool {
+        let found_frame = self.frames.get(idx);
+        if found_frame.is_none() {
+            return false;
+        }
+        let found_frame = found_frame.unwrap();
+        
+        self.frames.insert(idx, GifFrame { handle: found_frame.handle.clone(), duration: found_frame.duration.clone(), hidden: found_frame.hidden.clone() });
+        true
+    }
+
+    pub fn swap_frames(&mut self, source_idx: usize, dest_idx: usize) {
+        self.frames.swap(source_idx, dest_idx);
+    }
+
+    pub fn frames_iter(&self) -> std::slice::Iter<'_, GifFrame> {
+        self.frames.iter()
+    }
+
 
     pub fn set_current_frame(&mut self, value: u32) {
         let mut inner = self.write();
@@ -67,9 +138,7 @@ impl GifState {
         inner.goal_duration_in_frame = frame.duration;
         inner.current_frame = value;
         inner.last_update_time = Instant::now();
-        inner.time_from_start = todo!(); // TODO do this
-
-        
+        inner.time_from_start = Self::calc_time_from_start(&self.frames, value as usize, Duration::ZERO); // TODO do this
     }
 
     /// expensive seek!
@@ -98,9 +167,16 @@ impl GifState {
         }
     }
 
-    // expensive to discover!
+    pub fn total_frames(&self) -> u32 {
+        self.frames.len() as u32
+    }
+
+    pub fn num_visible_frames(&self) -> u32 {
+        self.num_visible_frames
+    }
+
     pub fn duration(&self) -> Duration {
-        self.frames.iter().fold(Duration::ZERO, |acc, elt| acc + elt.duration)
+        self.stored_duration
     }
 
     pub fn time_from_start(&self) -> Duration {

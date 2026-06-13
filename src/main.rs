@@ -4,6 +4,7 @@ mod screens;
 mod style;
 mod gifplayer;
 
+use iced::wgpu::wgc::binding_model::ResolvedPipelineLayoutDescriptor;
 use iced::widget::image::Handle;
 use screens::ScreenName;
 
@@ -124,9 +125,6 @@ impl<Message> canvas::Program<Message> for RectOverlay {
 
 pub struct VideoData {
     path: PathBuf,
-    duration: f64,
-    current_time: f64,
-    frames: u32,
     width: u16,
     height: u16,
     kind: VideoKind,
@@ -187,11 +185,8 @@ impl VideoData {
                 Ok(Self {
                     path: path_buf,
                     kind: VideoKind::Gif { player_state: gif_state},
-                    duration,
                     width,
                     height,
-                    frames: num_frames,
-                    current_time: 0f64,
                 })
             }
             _ => {
@@ -226,16 +221,33 @@ impl VideoData {
                 Ok(Self {
                     path: path_buf,
                     kind: VideoKind::Video { player },
-                    duration,
-                    frames,
+                    
                     width,
                     height,
-                    current_time: 0f64,
                 })
             }
         }
     }
+
+    /// Regardless of the underlying player, finds the duration
+    pub fn duration(&self) -> Duration {
+        match &self.kind {
+            VideoKind::Video { player } => player.duration(),
+            VideoKind::Gif { player_state } => player_state.duration(),
+        }
+    }
+
+    /// Regardless of the underlying player, finds the current time
+    pub fn current_time(&self) -> Duration {
+        match &self.kind {
+            VideoKind::Video { player } => player.position(),
+            VideoKind::Gif { player_state } => player_state.time_from_start(),
+        }
+    }
 }
+
+
+
 struct Counter {
     video: Option<VideoData>,
     screen: Option<Screen>,
@@ -385,18 +397,22 @@ impl Counter {
                 .height(Fill)
                 .style(style::button_full);
 
+            // TODO this can be bundled in the VideoKind::Video, since it is computed ONCE!
+                let vid_dur = player.duration().as_secs_f64();
+                let vid_time = player.position().as_secs_f64();
+
                 let player_bar = container(
                     row![
                         play_pause_button,
                         slider(
-                            0f64..=video.duration,
-                            video.current_time,
+                            0f64..=vid_dur,
+                            vid_time,
                             Message::PlayerSliderChanged
                         )
                         .step(1f64 / player.framerate())
                         .width(Fill)
                         .style(style::slider_full),
-                        text(format!("{:.1} / {:.1}", video.current_time, video.duration))
+                        text(format!("{:.1} / {:.1}", vid_time, vid_dur))
                             .center()
                             .size(15),
                         button(text("<").size(15).center())
@@ -500,18 +516,21 @@ impl Counter {
                 }
                 .height(Fill).width(Shrink).style(style::button_full);
 
+            let vid_dur = player_state.duration().as_secs_f64();
+            let vid_time = player_state.time_from_start().as_secs_f64();
+
                 let player_bar = container(
                     row![
                         play_pause_button,
                         slider(
-                            0f64..=video.duration,
-                            video.current_time,
+                            0f64..=vid_dur,
+                            vid_time,
                             Message::PlayerSliderChanged
                         )
                         .step(0.01f64) // gifs step by centiseconds
                         .width(Fill)
                         .style(style::slider_full),
-                        text(format!("{:.1} / {:.1}", video.current_time, video.duration))
+                        text(format!("{:.1} / {:.1}", vid_time, vid_dur))
                             .center()
                             .size(15),
                         button(text("<").size(15).center())
@@ -542,6 +561,23 @@ impl Counter {
                             .center()
                             .width(Shrink)
                             .height(Fill),
+                        Space::new().width(20),
+                        text("Frames:").size(13).center().width(Shrink).height(Fill),
+                        button(text("<").size(13).center())
+                            .on_press(Message::StepFrames(-1)) // gifs step by centiseconds
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
+                        text(format!("{}/{}", player_state.current_frame() + 1, player_state.num_visible_frames()))
+                            .size(13)
+                            .center()
+                            .width(Shrink)
+                            .height(Fill),
+                        button(text(">").size(13).center())
+                            .on_press(Message::StepFrames(1)) // gifs step by centiseconds
+                            .width(Shrink)
+                            .height(Fill)
+                            .style(style::button_full),
                         // mute_unmute_button,
                     ]
                     .height(20)
@@ -744,7 +780,7 @@ impl Counter {
                 };
                 let width = new_vid_data.width;
                 let height = new_vid_data.height;
-                let duration = new_vid_data.duration;
+                let duration = new_vid_data.duration().as_secs_f64();
                 self.video = Some(new_vid_data); // move
                 self.pipeline = Some(Pipeline::new(path_buf, width, height, duration));
 
@@ -757,14 +793,7 @@ impl Counter {
             }
             Message::VideoPlayerEnds => Task::none(),
             Message::VideoPlayerNewFrame => {
-                if let Some(vid) = self.video.as_mut() {
-                    match &mut vid.kind {
-                        VideoKind::Video { player } => {
-                            vid.current_time = player.position().as_secs_f64();
-                        }
-                        _ => { /* TODO OnNewFrame for gif */ }
-                    }
-                }
+                // TODO do we need?
                 Task::none()
             }
             Message::SetPlaying(playing) => {
@@ -804,21 +833,29 @@ impl Counter {
             }
             Message::PlayerSliderChanged(new_val) => {
                 
-                if let Some(vid) = self.video.as_mut()
-                    && let VideoKind::Video { player, .. } = &mut vid.kind
-                {
-                    vid.current_time = new_val;
-                    player
-                        .seek(std::time::Duration::from_secs_f64(new_val), false)
-                        .unwrap(); // TODO deal with this error somehow
-                }
+                if let Some(vid) = self.video.as_mut() {
+                    // vid.current_time = new_val;
+                    match &mut vid.kind {
+                        VideoKind::Video { player, .. } => {
+                            
+                            player
+                                .seek(std::time::Duration::from_secs_f64(new_val), false)
+                                .unwrap(); // TODO deal with this error somehow
+                        },
+                        VideoKind::Gif { player_state } => {
+                            player_state.seek_to_time(std::time::Duration::from_secs_f64(new_val));
+                        },
+                    }
+            
+            }
                 Task::none()
             }
             Message::SetTrimStartToNow => {
                 if let Some(vid) = self.video.as_mut() {
                     if let Some(Screen::Trim(trim_info)) = self.screen.as_mut() {
-                        trim_info.start_frame_time = vid.current_time;
-                        trim_info.start_frame_text = format!("{:.4}", vid.current_time);
+                        let cur_time = vid.current_time().as_secs_f64();
+                        trim_info.start_frame_time = cur_time;
+                        trim_info.start_frame_text = format!("{:.4}", cur_time);
                     }
                 }
                 Task::none()
@@ -826,8 +863,9 @@ impl Counter {
             Message::SetTrimEndToNow => {
                 if let Some(vid) = self.video.as_mut() {
                     if let Some(Screen::Trim(trim_info)) = self.screen.as_mut() {
-                        trim_info.end_frame_time = vid.current_time;
-                        trim_info.end_frame_text = format!("{:.4}", vid.current_time);
+                        let cur_time = vid.current_time().as_secs_f64();
+                        trim_info.end_frame_time = cur_time;
+                        trim_info.end_frame_text = format!("{:.4}", cur_time);
                     }
                 } else {
                     // ERROR!!! TODO
@@ -877,24 +915,34 @@ impl Counter {
                 Task::none()
             }
             Message::StepFrames(i) => {
-                if let Some(vid) = self.video.as_mut()
-                    && let VideoKind::Video { player, .. } = &mut vid.kind
-                {
-                    if i > 0 {
-                        for _ in 0..i {
-                            player.step_one_frame();
-                        }
-                        vid.current_time = player.position().as_secs_f64();
-                    } else if i < 0 {
-                        let target_loc: Duration = player.position().saturating_sub(
-                            Duration::from_secs_f64(-i as f64 / player.framerate()),
-                        );
-                        player.seek(target_loc, true).unwrap(); // TODO deal w error
-                        vid.current_time = player.position().as_secs_f64();
-                    } else {
-                        // do nothing
+                if let Some(vid) = self.video.as_mut() {
+                    match &mut vid.kind {
+                        VideoKind::Video { player } => {
+                            if i > 0 {
+                                for _ in 0..i {
+                                    player.step_one_frame();
+                                }
+                            } else if i < 0 {
+                                let target_loc: Duration = player.position().saturating_sub(
+                                    Duration::from_secs_f64(-i as f64 / player.framerate()),
+                                );
+                                player.seek(target_loc, true).unwrap(); // TODO deal w error
+                            } else {
+                                // do nothing
+                            }
+                        },
+                        VideoKind::Gif { player_state } => {
+                            if i > 0 {
+                                player_state.set_current_frame(player_state.current_frame().saturating_add(i as u32));
+                            } else if i < 0 {
+                                player_state.set_current_frame(player_state.current_frame().saturating_sub((-i) as u32));
+                            } else {
+                                // do nothing
+                            }
+                        },
                     }
                 }
+                
                 Task::none()
             }
             Message::TryTrim => {
@@ -938,7 +986,7 @@ impl Counter {
                         let vid = vid_result.unwrap();
                         let width = vid.width;
                         let height = vid.height;
-                        let duration = vid.duration;
+                        let duration = vid.duration().as_secs_f64();
 
                         self.video = Some(vid); // move vid
                         let pipeline = self
@@ -1182,7 +1230,7 @@ impl Counter {
                         let vid = vid.unwrap();
                         let width = vid.width;
                         let height = vid.height;
-                        let duration = vid.duration;
+                        let duration = vid.duration().as_secs_f64(); // TODO one of these is using match and not the function
 
                         self.video = Some(vid);
 
@@ -1300,7 +1348,7 @@ impl Counter {
                         let vid = vid.unwrap();
                         let width = vid.width;
                         let height = vid.height;
-                        let duration = vid.duration;
+                        let duration = vid.duration().as_secs_f64();
 
                         self.video = Some(vid);
                         pipeline.add(
@@ -1404,7 +1452,7 @@ impl Counter {
                         let vid = vid.unwrap();
                         let width = vid.width;
                         let height = vid.height;
-                        let duration = vid.duration;
+                        let duration = vid.duration().as_secs_f64();
 
                         self.video = Some(vid);
 
@@ -1421,10 +1469,15 @@ impl Counter {
                 }
                 Task::none()
             }
-            Message::FramesToGif => todo!(),
+            Message::FramesToGif => {
+                if let Some(video) = self.video.as_ref() && let VideoKind::Gif {player_state} = &video.kind {
+                    
+                }
+                Task::none()
+            },
             Message::OnNewGifFrame(next_frame_idx, time_from_start) => {
-                if let Some(VideoData { current_time, kind, .. }) = self.video.as_mut() {
-                    *current_time = time_from_start.as_secs_f64();
+                if let Some(VideoData { kind, .. }) = self.video.as_mut() {
+                    
                     if let VideoKind::Gif {player_state, ..} = kind {
                         // ??? what todo here?
 
@@ -1435,39 +1488,57 @@ impl Counter {
             },
             Message::GifFrameSetDuration { idx, new_duration_centiseconds } => {
                 if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, ..} = kind {
-                    if let Some(frame) = player_state.frames.get_mut(idx) {
-                        frame.duration = Duration::from_millis(new_duration_centiseconds as u64 * 10u64);
-                    }
+                    player_state.set_frame_duration(idx, Duration::from_millis(new_duration_centiseconds as u64 * 10u64));
                 }
                 Task::none()
             },
             Message::GifFrameSetHidden { idx, hidden } => {
                 if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
-                    if let Some(frame) = player_state.frames.get_mut(idx) {
-                        frame.hidden = hidden;
-                    }
+                    player_state.set_frame_hidden(idx, hidden);
                 }
                 Task::none()
             },
             Message::GifFrameCopy { idx } => {
                 if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
-                    if let Some(frame) = player_state.frames.get(idx) {
-                        player_state.frames.insert(idx, GifFrame{
-                            handle: frame.handle.clone(),
-                            duration: frame.duration.clone(),
-                            hidden: frame.hidden.clone(),
-                        });
-                    }
+                    player_state.copy_frame_at(idx);
+                    
                 }
                 Task::none()
             },
             Message::GifFrameSwap { source_idx, dest_idx } => {
                 if let Some(VideoData {kind, ..}) = self.video.as_mut() && let VideoKind::Gif { player_state, .. } = kind {
-                    player_state.frames.swap(source_idx, dest_idx);
+                    player_state.swap_frames(source_idx, dest_idx);
                 }
                 Task::none()
             },
-            Message::StepCentiseconds(_) => todo!(),
+            Message::StepCentiseconds(centiseconds) => {
+                
+                if let Some(vid) = self.video.as_mut() {
+                    match &mut vid.kind {
+                        VideoKind::Video { player } => {
+                            
+                            let target_pos = if centiseconds > 0 {
+                                player.position().saturating_add(Duration::from_millis(10 * centiseconds as u64))
+                            } else {
+                                player.position().saturating_sub(Duration::from_millis((-10 * centiseconds) as u64))
+                            };
+                            player.seek(target_pos, true).expect("Seeking fail when stepping centiseconds"); // TODO handle error
+                            
+                        },
+                        VideoKind::Gif { player_state } => {
+                            let target_pos = if centiseconds > 0 {
+                                player_state.time_from_start().saturating_add(Duration::from_millis(10 * centiseconds as u64))
+                            } else {
+                                player_state.time_from_start().saturating_sub(Duration::from_millis((-10 * centiseconds) as u64))
+                            };
+                            player_state.seek_to_time(target_pos);
+
+                        },
+                    }
+                }
+                
+                Task::none()
+            },
         }
     }
 }

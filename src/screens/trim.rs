@@ -22,7 +22,7 @@ pub struct TrimInfo {
 
 impl DefaultScreen for TrimInfo {
     fn from_video(video: &VideoData) -> Self {
-        let last_frame_time = video.duration;
+        let last_frame_time = video.duration().as_secs_f64();
 
         Self {
             start_frame_text: "0".to_string(),
@@ -39,7 +39,7 @@ impl DefaultScreen for TrimInfo {
                 self.start_frame_text = self.start_frame_time.to_string();
             }
         }
-        let max_dur = video.duration;
+        let max_dur = video.duration().as_secs_f64();
         if self.end_frame_time > max_dur {
             self.end_frame_time = max_dur;
             if update_text {
